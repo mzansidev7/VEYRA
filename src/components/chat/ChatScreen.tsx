@@ -273,7 +273,6 @@ export function ChatScreen({
       setMessageError("");
       setMessages([]);
       setDraft("");
-      setIsOtherOnline(false);
       setIsLoadingMessages(true);
       setActiveConversation(conversation);
     },

@@ -5,11 +5,15 @@ import { supabaseClient } from "../lib/supabaseClient";
 
 export function startAppPresence(
   userId: string,
-  onError: (error: Error) => void,
+  onError: (error: Error | null) => void,
 ): () => void {
   const client = supabaseClient;
   if (!client) {
-    onError(new Error("Online status is unavailable because Supabase is not configured."));
+    onError(
+      new Error(
+        "Online status is unavailable because Supabase is not configured.",
+      ),
+    );
     return () => {};
   }
 
@@ -89,6 +93,7 @@ export function startAppPresence(
   channel.subscribe((status, error) => {
     if (status === "SUBSCRIBED") {
       isSubscribed = true;
+      onError(null);
       void refreshVisibility();
     } else if (status === "CHANNEL_ERROR" || status === "TIMED_OUT") {
       isSubscribed = false;
@@ -127,7 +132,9 @@ export function useOnlineStatuses(
   const [onlineUserIds, setOnlineUserIds] = useState<ReadonlySet<string>>(
     () => new Set(),
   );
-  const [error, setError] = useState("");
+  const [failedUserIds, setFailedUserIds] = useState<ReadonlyMap<string, string>>(
+    () => new Map(),
+  );
   const targetKey = Array.from(
     new Set(targetUserIds.filter((id) => id && id !== viewerId)),
   )
@@ -138,7 +145,7 @@ export function useOnlineStatuses(
     const client = supabaseClient;
     const targetIds = targetKey ? targetKey.split(",") : [];
     setOnlineUserIds(new Set());
-    setError("");
+    setFailedUserIds(new Map());
     if (!client || !targetIds.length) return;
 
     let active = true;
@@ -165,14 +172,29 @@ export function useOnlineStatuses(
       channel.subscribe((status, subscribeError) => {
         if (!active) return;
         if (status === "SUBSCRIBED") {
+          setFailedUserIds((current) => {
+            if (!current.has(targetUserId)) return current;
+            const next = new Map(current);
+            next.delete(targetUserId);
+            return next;
+          });
           syncPresence();
         } else if (
           status === "CHANNEL_ERROR" ||
           status === "TIMED_OUT"
         ) {
-          setError(
-            subscribeError?.message ??
-              "Could not connect to online status. Apply the online presence migration and verify Realtime is enabled.",
+          setOnlineUserIds((current) => {
+            if (!current.has(targetUserId)) return current;
+            const next = new Set(current);
+            next.delete(targetUserId);
+            return next;
+          });
+          setFailedUserIds((current) =>
+            new Map(current).set(
+              targetUserId,
+              subscribeError?.message ??
+                "Could not connect to online status. Apply the online presence migration and verify Realtime is enabled.",
+            ),
           );
         }
       });
@@ -185,6 +207,7 @@ export function useOnlineStatuses(
     };
   }, [targetKey, viewerId]);
 
+  const error = Array.from(failedUserIds.values())[0] ?? "";
   return { onlineUserIds, error };
 }
 

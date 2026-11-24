@@ -477,7 +477,9 @@ function DiscoveryApp({
 
   useEffect(
     () =>
-      startAppPresence(userId, (error) => setPresenceError(error.message)),
+      startAppPresence(userId, (error) =>
+        setPresenceError(error?.message ?? ""),
+      ),
     [userId],
   );
 
@@ -1375,7 +1377,6 @@ function DiscoveryApp({
                       <View style={styles.imageShade} />
                       <View style={styles.cardTopRow}>
                         <View style={styles.intentBadge}>
-                          <View style={styles.onlineDot} />
                           <Text style={styles.intentText} numberOfLines={1}>
                             {currentPerson.intentions[0]?.toUpperCase() ??
                               "OPEN TO A CONNECTION"}
@@ -1948,6 +1949,19 @@ function DiscoveryApp({
                                 ? ""
                                 : `, ${selectedLikeProfile.person.age}`}
                             </Text>
+                            {onlineUserIds.has(
+                              selectedLikeProfile.person.id,
+                            ) ? (
+                              <View
+                                accessibilityLabel={`${selectedLikeProfile.person.name} is online`}
+                                style={styles.onlinePresence}
+                              >
+                                <View style={styles.onlinePresenceDot} />
+                                <Text style={styles.onlinePresenceText}>
+                                  Online
+                                </Text>
+                              </View>
+                            ) : null}
                           </View>
                         </View>
                       )}
@@ -3108,13 +3122,6 @@ const styles = StyleSheet.create({
     paddingHorizontal: 10,
     borderRadius: 15,
     backgroundColor: "rgba(28, 22, 24, 0.68)",
-  },
-  onlineDot: {
-    width: 6,
-    height: 6,
-    borderRadius: 3,
-    marginRight: 7,
-    backgroundColor: "#9AD4A5",
   },
   intentText: {
     color: "#FFF8F4",

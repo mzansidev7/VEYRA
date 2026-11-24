@@ -7,7 +7,8 @@ stable
 security definer
 set search_path = public, pg_temp
 as $$
-  select exists (
+  select p_target_user_id = (select auth.uid())
+    or exists (
     select 1
     from public.dating_profiles as viewer
     join auth.users as viewer_auth
@@ -54,6 +55,21 @@ as $$
                 and match.user_two_id = candidate.user_id)
               or (match.user_one_id = candidate.user_id
                 and match.user_two_id = viewer.user_id)
+            )
+        )
+        or exists (
+          select 1
+          from public.video_discovery_sessions as session
+          where session.status in (
+              'pending_acceptance',
+              'accepted',
+              'connected'
+            )
+            and (
+              (session.user_one_id = viewer.user_id
+                and session.user_two_id = candidate.user_id)
+              or (session.user_one_id = candidate.user_id
+                and session.user_two_id = viewer.user_id)
             )
         )
         or exists (
@@ -174,6 +190,12 @@ create policy "Users can publish their own online presence"
   to authenticated
   with check (
     realtime.messages.extension = 'presence'
+    and exists (
+      select 1
+      from public.user_privacy_settings as settings
+      where settings.user_id = (select auth.uid())
+        and settings.show_online_status
+    )
     and case
       when realtime.topic() ~ '^user-presence:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
         then split_part(realtime.topic(), ':', 2)::uuid = (select auth.uid())

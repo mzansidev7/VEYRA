@@ -1266,6 +1266,22 @@ function createStyles(colors: SystemColors) {
       fontSize: 16,
       fontWeight: "700",
     },
+    participantOnline: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 5,
+    },
+    participantOnlineDot: {
+      width: 7,
+      height: 7,
+      borderRadius: 4,
+      backgroundColor: colors.success,
+    },
+    participantOnlineText: {
+      color: colors.success,
+      fontSize: 11,
+      fontWeight: "700",
+    },
     feedback: {
       padding: 13,
       borderRadius: 14,
