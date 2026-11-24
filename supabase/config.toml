@@ -1,0 +1,4 @@
+project_id = "veyra"
+
+[auth.email]
+enable_confirmations = false

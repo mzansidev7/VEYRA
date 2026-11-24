@@ -1,0 +1,18 @@
+do $realtime$
+begin
+  if exists (
+    select 1
+    from pg_publication
+    where pubname = 'supabase_realtime'
+  ) and not exists (
+    select 1
+    from pg_publication_tables
+    where pubname = 'supabase_realtime'
+      and schemaname = 'public'
+      and tablename = 'user_privacy_settings'
+  ) then
+    alter publication supabase_realtime
+      add table public.user_privacy_settings;
+  end if;
+end;
+$realtime$;

@@ -1,0 +1,75 @@
+{
+  "expo": {
+    "name": "VEYRA",
+    "slug": "veyra",
+    "scheme": "veyra",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "automatic",
+    "ios": {
+      "bundleIdentifier": "com.mzansidigital.veyra",
+      "usesAppleSignIn": true,
+      "supportsTablet": true
+    },
+    "android": {
+      "package": "com.mzansidigital.veyra",
+      "softwareKeyboardLayoutMode": "resize",
+      "adaptiveIcon": {
+        "backgroundColor": "#E6F4FE",
+        "foregroundImage": "./assets/android-icon-foreground.png",
+        "backgroundImage": "./assets/android-icon-background.png",
+        "monochromeImage": "./assets/android-icon-monochrome.png"
+      },
+      "predictiveBackGestureEnabled": false
+    },
+    "web": {
+      "favicon": "./assets/favicon.png"
+    },
+    "platforms": [
+      "ios",
+      "android",
+      "web"
+    ],
+    "plugins": [
+      "expo-apple-authentication",
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "VEYRA uses your photos to help you build your dating profile."
+        }
+      ],
+      "expo-secure-store",
+      "expo-web-browser",
+      [
+        "expo-audio",
+        {
+          "microphonePermission": "VEYRA uses your microphone when you choose to record a voice message, profile introduction, or join a video call."
+        }
+      ],
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "VEYRA uses your camera when you choose to take a selfie or join a video call.",
+          "microphonePermission": "VEYRA uses your microphone when you choose to record a voice message, profile introduction, or join a video call.",
+          "recordAudioAndroid": false
+        }
+      ],
+      "@react-native-community/datetimepicker",
+      [
+        "expo-location",
+        {
+          "locationWhenInUsePermission": "VEYRA uses your location only when you choose to use your current location for nearby introductions."
+        }
+      ],
+      "expo-video",
+      "@livekit/react-native-expo-plugin",
+      "@config-plugins/react-native-webrtc"
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "4f624452-bda6-45f3-850c-836c17350208"
+      }
+    }
+  }
+}
