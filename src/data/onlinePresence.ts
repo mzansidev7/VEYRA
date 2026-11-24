@@ -17,9 +17,7 @@ export function startAppPresence(
     return () => {};
   }
 
-  const channel = client.channel(`user-presence:${userId}`, {
-    config: { private: true, presence: { key: userId } },
-  });
+  let channel: ReturnType<typeof client.channel> | null = null;
   let canShareOnlineStatus = false;
   let isActive = AppState.currentState === "active";
   let isSubscribed = false;
@@ -27,7 +25,7 @@ export function startAppPresence(
   let privacyRevision = 0;
 
   const updatePresence = async () => {
-    if (disposed || !isSubscribed) return;
+    if (disposed || !isSubscribed || !channel) return;
     try {
       const result =
         isActive && canShareOnlineStatus
@@ -46,6 +44,7 @@ export function startAppPresence(
   };
 
   const refreshVisibility = async () => {
+    if (disposed) return;
     const revision = privacyRevision;
     try {
       const { settings } = await refreshPrivacyData(userId);
@@ -63,48 +62,78 @@ export function startAppPresence(
     }
   };
 
-  channel.on(
-    "postgres_changes",
-    {
-      event: "*",
-      schema: "public",
-      table: "user_privacy_settings",
-      filter: `user_id=eq.${userId}`,
-    },
-    (payload) => {
-      privacyRevision += 1;
-      if (payload.eventType === "DELETE") {
-        canShareOnlineStatus = false;
-        void updatePresence();
-        return;
+  const startChannel = async () => {
+    try {
+      const {
+        data: { session },
+        error,
+      } = await client.auth.getSession();
+      if (error) {
+        throw new Error(`Could not verify your session: ${error.message}`);
       }
-      if (
-        !isRecord(payload.new) ||
-        typeof payload.new.show_online_status !== "boolean"
-      ) {
-        onError(new Error("The updated online visibility setting was invalid."));
-        return;
+      if (!session || session.user.id !== userId) {
+        throw new Error("Sign in again to use online status.");
       }
-      canShareOnlineStatus = payload.new.show_online_status;
-      void updatePresence();
-    },
-  );
+      await client.realtime.setAuth(session.access_token);
+      if (disposed) return;
 
-  channel.subscribe((status, error) => {
-    if (status === "SUBSCRIBED") {
-      isSubscribed = true;
-      onError(null);
-      void refreshVisibility();
-    } else if (status === "CHANNEL_ERROR" || status === "TIMED_OUT") {
-      isSubscribed = false;
-      onError(
-        new Error(
-          error?.message ??
-            "Could not connect to online status. Apply the online presence migration and verify Realtime is enabled.",
-        ),
+      channel = client.channel(`user-presence:${userId}`, {
+        config: { private: true, presence: { key: userId } },
+      });
+      channel.on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "user_privacy_settings",
+          filter: `user_id=eq.${userId}`,
+        },
+        (payload) => {
+          privacyRevision += 1;
+          if (payload.eventType === "DELETE") {
+            canShareOnlineStatus = false;
+            void updatePresence();
+            return;
+          }
+          if (
+            !isRecord(payload.new) ||
+            typeof payload.new.show_online_status !== "boolean"
+          ) {
+            onError(
+              new Error("The updated online visibility setting was invalid."),
+            );
+            return;
+          }
+          canShareOnlineStatus = payload.new.show_online_status;
+          void updatePresence();
+        },
       );
+      channel.subscribe((status, subscribeError) => {
+        if (status === "SUBSCRIBED") {
+          isSubscribed = true;
+          onError(null);
+          void refreshVisibility();
+        } else if (status === "CHANNEL_ERROR" || status === "TIMED_OUT") {
+          isSubscribed = false;
+          onError(
+            new Error(
+              subscribeError?.message ??
+                "Could not connect to online status. Apply the online presence migration and verify Realtime is enabled.",
+            ),
+          );
+        }
+      });
+    } catch (cause) {
+      if (!disposed) {
+        onError(
+          cause instanceof Error
+            ? cause
+            : new Error("Could not initialize your online status."),
+        );
+      }
     }
-  });
+  };
+  void startChannel();
 
   const appStateSubscription = AppState.addEventListener(
     "change",
@@ -121,7 +150,7 @@ export function startAppPresence(
   return () => {
     disposed = true;
     appStateSubscription.remove();
-    void client.removeChannel(channel);
+    if (channel) void client.removeChannel(channel);
   };
 }
 
@@ -149,57 +178,89 @@ export function useOnlineStatuses(
     if (!client || !targetIds.length) return;
 
     let active = true;
-    const channels = targetIds.map((targetUserId) => {
-      const channel = client.channel(`user-presence:${targetUserId}`, {
-        config: { private: true, presence: { key: viewerId } },
-      });
-      const syncPresence = () => {
-        if (!active) return;
-        const isOnline = Boolean(channel.presenceState()[targetUserId]?.length);
-        setOnlineUserIds((current) => {
-          if (current.has(targetUserId) === isOnline) return current;
-          const next = new Set(current);
-          if (isOnline) {
-            next.add(targetUserId);
-          } else {
-            next.delete(targetUserId);
-          }
-          return next;
-        });
-      };
-
-      channel.on("presence", { event: "sync" }, syncPresence);
-      channel.subscribe((status, subscribeError) => {
-        if (!active) return;
-        if (status === "SUBSCRIBED") {
-          setFailedUserIds((current) => {
-            if (!current.has(targetUserId)) return current;
-            const next = new Map(current);
-            next.delete(targetUserId);
-            return next;
-          });
-          syncPresence();
-        } else if (
-          status === "CHANNEL_ERROR" ||
-          status === "TIMED_OUT"
-        ) {
-          setOnlineUserIds((current) => {
-            if (!current.has(targetUserId)) return current;
-            const next = new Set(current);
-            next.delete(targetUserId);
-            return next;
-          });
-          setFailedUserIds((current) =>
-            new Map(current).set(
-              targetUserId,
-              subscribeError?.message ??
-                "Could not connect to online status. Apply the online presence migration and verify Realtime is enabled.",
-            ),
+    let channels: ReturnType<typeof client.channel>[] = [];
+    const subscribe = async () => {
+      try {
+        const {
+          data: { session },
+          error: sessionError,
+        } = await client.auth.getSession();
+        if (sessionError) {
+          throw new Error(
+            `Could not verify your session: ${sessionError.message}`,
           );
         }
-      });
-      return channel;
-    });
+        if (!session || session.user.id !== viewerId) {
+          throw new Error("Sign in again to view online status.");
+        }
+        await client.realtime.setAuth(session.access_token);
+        if (!active) return;
+
+        channels = targetIds.map((targetUserId) => {
+          const channel = client.channel(`user-presence:${targetUserId}`, {
+            config: { private: true, presence: { key: viewerId } },
+          });
+          const syncPresence = () => {
+            if (!active) return;
+            const isOnline = Boolean(
+              channel.presenceState()[targetUserId]?.length,
+            );
+            setOnlineUserIds((current) => {
+              if (current.has(targetUserId) === isOnline) return current;
+              const next = new Set(current);
+              if (isOnline) {
+                next.add(targetUserId);
+              } else {
+                next.delete(targetUserId);
+              }
+              return next;
+            });
+          };
+
+          channel.on("presence", { event: "sync" }, syncPresence);
+          channel.subscribe((status, subscribeError) => {
+            if (!active) return;
+            if (status === "SUBSCRIBED") {
+              setFailedUserIds((current) => {
+                if (!current.has(targetUserId)) return current;
+                const next = new Map(current);
+                next.delete(targetUserId);
+                return next;
+              });
+              syncPresence();
+            } else if (
+              status === "CHANNEL_ERROR" ||
+              status === "TIMED_OUT"
+            ) {
+              setOnlineUserIds((current) => {
+                if (!current.has(targetUserId)) return current;
+                const next = new Set(current);
+                next.delete(targetUserId);
+                return next;
+              });
+              setFailedUserIds((current) =>
+                new Map(current).set(
+                  targetUserId,
+                  subscribeError?.message ??
+                    "Could not connect to online status. Apply the online presence migration and verify Realtime is enabled.",
+                ),
+              );
+            }
+          });
+          return channel;
+        });
+      } catch (cause) {
+        if (!active) return;
+        const errorMessage =
+          cause instanceof Error
+            ? cause.message
+            : "Could not initialize online status.";
+        setFailedUserIds(
+          new Map(targetIds.map((targetId) => [targetId, errorMessage])),
+        );
+      }
+    };
+    void subscribe();
 
     return () => {
       active = false;
