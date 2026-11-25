@@ -3,6 +3,76 @@ import { useEffect, useState } from "react";
 import { refreshPrivacyData } from "./privacySettings";
 import { supabaseClient } from "../lib/supabaseClient";
 
+type PresenceListener = (isOnline: boolean, error: string | null) => void;
+type PresenceChannel = {
+  channel: ReturnType<NonNullable<typeof supabaseClient>["channel"]>;
+  listeners: Set<PresenceListener>;
+  isOnline: boolean;
+  error: string | null;
+};
+
+const presenceChannels = new Map<string, PresenceChannel>();
+
+function observeUserPresence(
+  client: NonNullable<typeof supabaseClient>,
+  viewerId: string,
+  targetUserId: string,
+  listener: PresenceListener,
+): () => void {
+  let entry = presenceChannels.get(targetUserId);
+  const isNew = !entry;
+  if (!entry) {
+    entry = {
+      channel: client.channel(`user-presence:${targetUserId}`, {
+        config: { private: true, presence: { key: viewerId } },
+      }),
+      listeners: new Set(),
+      isOnline: false,
+      error: null,
+    };
+    presenceChannels.set(targetUserId, entry);
+  }
+
+  entry.listeners.add(listener);
+  listener(entry.isOnline, entry.error);
+
+  if (isNew) {
+    const newEntry = entry;
+    const syncPresence = () => {
+      newEntry.isOnline = Boolean(
+        newEntry.channel.presenceState()[targetUserId]?.length,
+      );
+      newEntry.error = null;
+      newEntry.listeners.forEach((notify) => notify(newEntry.isOnline, null));
+    };
+
+    newEntry.channel.on("presence", { event: "sync" }, syncPresence);
+    newEntry.channel.subscribe((status, subscribeError) => {
+      if (status === "SUBSCRIBED") {
+        syncPresence();
+      } else if (status === "CHANNEL_ERROR" || status === "TIMED_OUT") {
+        newEntry.isOnline = false;
+        newEntry.error =
+          subscribeError?.message ??
+          "Could not connect to online status. Apply the online presence migration and verify Realtime is enabled.";
+        newEntry.listeners.forEach((notify) =>
+          notify(false, newEntry.error),
+        );
+      }
+    });
+  }
+
+  return () => {
+    const current = presenceChannels.get(targetUserId);
+    if (!current) return;
+    current.listeners.delete(listener);
+    if (current.listeners.size === 0) {
+      presenceChannels.delete(targetUserId);
+      void client.removeChannel(current.channel);
+    }
+  };
+}
+
 export function startAppPresence(
   userId: string,
   onError: (error: Error | null) => void,
@@ -178,7 +248,7 @@ export function useOnlineStatuses(
     if (!client || !targetIds.length) return;
 
     let active = true;
-    let channels: ReturnType<typeof client.channel>[] = [];
+    let removeListeners: (() => void)[] = [];
     const subscribe = async () => {
       try {
         const {
@@ -196,59 +266,35 @@ export function useOnlineStatuses(
         await client.realtime.setAuth(session.access_token);
         if (!active) return;
 
-        channels = targetIds.map((targetUserId) => {
-          const channel = client.channel(`user-presence:${targetUserId}`, {
-            config: { private: true, presence: { key: viewerId } },
-          });
-          const syncPresence = () => {
-            if (!active) return;
-            const isOnline = Boolean(
-              channel.presenceState()[targetUserId]?.length,
-            );
-            setOnlineUserIds((current) => {
-              if (current.has(targetUserId) === isOnline) return current;
-              const next = new Set(current);
-              if (isOnline) {
-                next.add(targetUserId);
-              } else {
-                next.delete(targetUserId);
-              }
-              return next;
-            });
-          };
-
-          channel.on("presence", { event: "sync" }, syncPresence);
-          channel.subscribe((status, subscribeError) => {
-            if (!active) return;
-            if (status === "SUBSCRIBED") {
-              setFailedUserIds((current) => {
-                if (!current.has(targetUserId)) return current;
-                const next = new Map(current);
-                next.delete(targetUserId);
-                return next;
-              });
-              syncPresence();
-            } else if (
-              status === "CHANNEL_ERROR" ||
-              status === "TIMED_OUT"
-            ) {
+        removeListeners = targetIds.map((targetUserId) =>
+          observeUserPresence(
+            client,
+            viewerId,
+            targetUserId,
+            (isOnline, channelError) => {
+              if (!active) return;
               setOnlineUserIds((current) => {
-                if (!current.has(targetUserId)) return current;
+                if (current.has(targetUserId) === isOnline) return current;
                 const next = new Set(current);
-                next.delete(targetUserId);
+                if (isOnline) {
+                  next.add(targetUserId);
+                } else {
+                  next.delete(targetUserId);
+                }
                 return next;
               });
-              setFailedUserIds((current) =>
-                new Map(current).set(
-                  targetUserId,
-                  subscribeError?.message ??
-                    "Could not connect to online status. Apply the online presence migration and verify Realtime is enabled.",
-                ),
-              );
-            }
-          });
-          return channel;
-        });
+              setFailedUserIds((current) => {
+                if (!channelError) {
+                  if (!current.has(targetUserId)) return current;
+                  const next = new Map(current);
+                  next.delete(targetUserId);
+                  return next;
+                }
+                return new Map(current).set(targetUserId, channelError);
+              });
+            },
+          ),
+        );
       } catch (cause) {
         if (!active) return;
         const errorMessage =
@@ -264,7 +310,7 @@ export function useOnlineStatuses(
 
     return () => {
       active = false;
-      channels.forEach((channel) => void client.removeChannel(channel));
+      removeListeners.forEach((removeListener) => removeListener());
     };
   }, [targetKey, viewerId]);
 

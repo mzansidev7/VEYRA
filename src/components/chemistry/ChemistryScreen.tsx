@@ -355,6 +355,11 @@ export function ChemistryScreen({
                 localProfile={localProfile}
                 colors={colors}
               />
+              <ChemistryScoreCard
+                connection={selectedConnection}
+                localProfile={localProfile}
+                colors={colors}
+              />
               {actionError ? (
                 <Text accessibilityRole="alert" style={[styles.error, { color: colors.error }]}>
                   {actionError}
@@ -776,11 +781,11 @@ function CompletedAnswers({
       </Text>
       <View style={[styles.compatibilityCard, { backgroundColor: colors.surfaceSecondary }]}>
         <Text style={[styles.compatibilityTitle, { color: colors.text }]}>
-          Answer compatibility · {getAnswerCompatibility(session.results)}%
+          Shared answer wording · {getAnswerCompatibility(session.results)}%
         </Text>
         <Text style={[styles.compatibilityCopy, { color: colors.textSecondary }]}>
-          A rough comparison of your shared choices and wording—not a verdict on
-          your relationship.
+          This compares shared words and choices only, not meaning or
+          relationship potential.
         </Text>
       </View>
       {session.results.map((result, index) => (
@@ -900,6 +905,186 @@ function InsightsCard({
       )}
     </View>
   );
+}
+
+function ChemistryScoreCard({
+  connection,
+  localProfile,
+  colors,
+}: {
+  connection: ChemistryConnection;
+  localProfile: LocalDatingProfile | null;
+  colors: SystemColors;
+}) {
+  const sharedInterests = calculateListOverlap(
+    localProfile?.profile.interests ?? [],
+    connection.person.interests,
+  );
+  const sharedIntentions = calculateListOverlap(
+    localProfile?.intentions ?? [],
+    connection.person.intentions,
+  );
+  const profileSignals = [sharedInterests, sharedIntentions].filter(
+    (score): score is number => score !== null,
+  );
+  const profileAlignment = profileSignals.length
+    ? Math.round(
+        profileSignals.reduce((total, score) => total + score, 0) /
+          profileSignals.length,
+      )
+    : null;
+  const completedActivities = new Set(
+    connection.sessions
+      .filter((session) => session.status === "completed")
+      .map((session) => session.activityKey),
+  ).size;
+  const activityProgress = Math.round((completedActivities / 3) * 100);
+  const availableSignals =
+    profileAlignment === null
+      ? [activityProgress]
+      : [profileAlignment, activityProgress];
+  const score = Math.round(
+    availableSignals.reduce((total, signal) => total + signal, 0) /
+      availableSignals.length,
+  );
+  const scoreBorderColor = blendHexColors(
+    colors.border,
+    blendHexColors(colors.compatibility, colors.like, score / 100),
+    0.4,
+  );
+
+  return (
+    <View
+      style={[
+        styles.chemistryScoreCard,
+        { backgroundColor: colors.surface, borderColor: scoreBorderColor },
+      ]}
+    >
+      <Text style={[styles.chemistryScoreEyebrow, { color: colors.like }]}>
+        A PRIVATE SNAPSHOT FOR YOU TWO
+      </Text>
+      <View style={styles.chemistryScoreHeader}>
+        <View style={styles.chemistryScoreCopy}>
+          <Text style={[styles.chemistryScoreTitle, { color: colors.text }]}>
+            Chemistry Score
+          </Text>
+          <Text
+            style={[
+              styles.chemistryScoreDescription,
+              { color: colors.textSecondary },
+            ]}
+          >
+            A snapshot of shared profile details and activities completed
+            together.
+          </Text>
+        </View>
+        <View
+          accessibilityLabel={`Chemistry Score ${score} percent`}
+          style={[
+            styles.chemistryScoreValue,
+            { backgroundColor: colors.surfaceSecondary },
+          ]}
+        >
+          <Text style={[styles.chemistryScoreNumber, { color: colors.text }]}>
+            {score}%
+          </Text>
+          <Text
+            style={[
+              styles.chemistryScorePercent,
+              { color: colors.textSecondary },
+            ]}
+          >
+            PAIR
+          </Text>
+        </View>
+      </View>
+      <ScoreSignal
+        label="Shared interests"
+        value={formatScoreSignal(sharedInterests)}
+        colors={colors}
+      />
+      <ScoreSignal
+        label="Shared intentions"
+        value={formatScoreSignal(sharedIntentions)}
+        colors={colors}
+      />
+      <ScoreSignal
+        label="Chemistry activities"
+        value={`${completedActivities} of 3 completed together`}
+        colors={colors}
+      />
+      <Text
+        style={[styles.chemistryScoreDisclaimer, { color: colors.textMuted }]}
+      >
+        Profile signals and completed activities are equally weighted. This
+        doesn’t analyze private messages or measure feelings or relationship
+        potential.
+      </Text>
+    </View>
+  );
+}
+
+function ScoreSignal({
+  label,
+  value,
+  colors,
+}: {
+  label: string;
+  value: string;
+  colors: SystemColors;
+}) {
+  return (
+    <View style={styles.scoreSignal}>
+      <Text style={[styles.scoreSignalLabel, { color: colors.textSecondary }]}>
+        {label}
+      </Text>
+      <Text style={[styles.scoreSignalValue, { color: colors.text }]}>
+        {value}
+      </Text>
+    </View>
+  );
+}
+
+function calculateListOverlap(
+  first: readonly string[],
+  second: readonly string[],
+): number | null {
+  const firstValues = new Set(first.map(normalizeSharedValue).filter(Boolean));
+  const secondValues = new Set(second.map(normalizeSharedValue).filter(Boolean));
+  if (!firstValues.size || !secondValues.size) return null;
+  const sharedCount = [...firstValues].filter((value) =>
+    secondValues.has(value),
+  ).length;
+  return Math.round(
+    (sharedCount / new Set([...firstValues, ...secondValues]).size) * 100,
+  );
+}
+
+function normalizeSharedValue(value: string): string {
+  return value.trim().toLocaleLowerCase();
+}
+
+function formatScoreSignal(score: number | null): string {
+  return score === null ? "Not enough shared details yet" : `${score}% overlap`;
+}
+
+function blendHexColors(first: string, second: string, ratio: number): string {
+  const firstChannels = parseHexColor(first);
+  const secondChannels = parseHexColor(second);
+  const weight = Math.max(0, Math.min(1, ratio));
+  const channels = firstChannels.map((channel, index) =>
+    Math.round(channel + (secondChannels[index] - channel) * weight),
+  );
+  return `#${channels.map((channel) => channel.toString(16).padStart(2, "0")).join("")}`;
+}
+
+function parseHexColor(color: string): [number, number, number] {
+  const hex = color.slice(1);
+  return [
+    Number.parseInt(hex.slice(0, 2), 16),
+    Number.parseInt(hex.slice(2, 4), 16),
+    Number.parseInt(hex.slice(4, 6), 16),
+  ];
 }
 
 function formatRelativeDate(value: string): string {
@@ -1036,6 +1221,74 @@ const styles = StyleSheet.create({
   compatibilityTitle: { fontSize: 13, fontWeight: "700" },
   compatibilityCopy: { fontSize: 11, lineHeight: 16, marginTop: 5 },
   insightsCard: { borderWidth: 1, borderRadius: 18, padding: 16, marginTop: 24 },
+  chemistryScoreCard: {
+    borderWidth: 1,
+    borderRadius: 18,
+    padding: 16,
+    marginTop: 16,
+  },
+  chemistryScoreEyebrow: {
+    fontSize: 9,
+    fontWeight: "800",
+    letterSpacing: 1.1,
+  },
+  chemistryScoreHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    marginTop: 8,
+    marginBottom: 8,
+  },
+  chemistryScoreCopy: {
+    flex: 1,
+  },
+  chemistryScoreTitle: {
+    fontSize: 18,
+    fontWeight: "800",
+  },
+  chemistryScoreDescription: {
+    fontSize: 11,
+    lineHeight: 16,
+    marginTop: 4,
+  },
+  chemistryScoreValue: {
+    width: 58,
+    height: 58,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: 16,
+  },
+  chemistryScoreNumber: {
+    fontSize: 20,
+    fontWeight: "800",
+  },
+  chemistryScorePercent: {
+    fontSize: 7,
+    fontWeight: "700",
+    letterSpacing: 0.6,
+  },
+  scoreSignal: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    gap: 12,
+    paddingVertical: 8,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: "rgba(128, 128, 128, 0.2)",
+  },
+  scoreSignalLabel: {
+    flex: 1,
+    fontSize: 11,
+  },
+  scoreSignalValue: {
+    fontSize: 11,
+    fontWeight: "700",
+    textAlign: "right",
+  },
+  chemistryScoreDisclaimer: {
+    fontSize: 9,
+    lineHeight: 14,
+    marginTop: 6,
+  },
   insightsTitle: { fontSize: 14, fontWeight: "700" },
   insightsCopy: { fontSize: 12, lineHeight: 18, marginTop: 8 },
   stateWrap: { alignItems: "center", paddingVertical: 32, gap: 12 },

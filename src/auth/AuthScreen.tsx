@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import {
   ActivityIndicator,
   Dimensions,
+  Image,
   ImageBackground,
   KeyboardAvoidingView,
   Platform,
@@ -23,7 +24,7 @@ import { Eye, EyeOff } from "lucide-react-native";
 import type { AuthFormMode, EmailSignupResult } from "./auth";
 import { BirthdayField } from "./BirthdayField";
 import { isAdultBirthday } from "../data/localProfile";
-import { systemColors } from "../systemColors";
+import { brandColors, systemColors } from "../systemColors";
 
 WebBrowser.maybeCompleteAuthSession();
 
@@ -254,8 +255,8 @@ export function AuthScreen({
         <LinearGradient
           colors={[
             "rgba(247, 240, 240, 0)",
-            "rgb(231, 17, 17)",
-            "rgb(255, 0, 0)",
+            "rgba(72, 2, 162, 0.9)",
+            brandColors.magenta,
           ]}
           locations={[0, 0.48, 1]}
           start={{ x: 0.5, y: 0 }}
@@ -288,7 +289,13 @@ export function AuthScreen({
                 >
                   <Text style={styles.backText}>‹ Back</Text>
                 </Pressable>
-                <Text style={styles.formWordmark}>VEYRA</Text>
+                <Image
+                  accessibilityLabel="VEYRA"
+                  accessible
+                  resizeMode="contain"
+                  source={require("../../assets/VeyraLogo.png")}
+                  style={styles.formLogo}
+                />
               </View>
               <View style={styles.formHero}>
                 <Text style={styles.eyebrow}>MEET WITH INTENTION</Text>
@@ -359,8 +366,8 @@ export function AuthScreen({
                       colors={systemColors.dark}
                     />
                     <Text style={styles.ageRequirement}>
-                      VEYRA is an adults-only dating platform. You must be 18
-                      or older to create an account.
+                      VEYRA is an adults-only dating platform. You must be 18 or
+                      older to create an account.
                     </Text>
                   </>
                 ) : null}
@@ -409,9 +416,13 @@ export function AuthScreen({
                   </Text>
                   <View style={styles.heroEyebrowDot} />
                 </View>
-                <Text accessibilityRole="header" style={styles.welcomeWordmark}>
-                  veyra
-                </Text>
+                <Image
+                  accessibilityLabel="VEYRA"
+                  accessible
+                  resizeMode="contain"
+                  source={require("../../assets/VeyraLogo.png")}
+                  style={styles.welcomeLogo}
+                />
                 <View style={styles.heroAccent} />
                 <Text style={styles.tagline}>For lives already built.</Text>
               </View>
@@ -719,26 +730,24 @@ const styles = StyleSheet.create({
     width: 4,
     height: 4,
     borderRadius: 2,
-    backgroundColor: "#E9A394",
+    backgroundColor: brandColors.magenta,
   },
   welcomeText: {
-    color: "#F1C3B9",
+    color: "#F7C3DD",
     fontSize: 9,
     fontWeight: "700",
     letterSpacing: 2.4,
   },
-  welcomeWordmark: {
-    color: "#FFFDFC",
-    fontSize: 72,
-    fontWeight: "700",
-    letterSpacing: -4,
-    lineHeight: 80,
+  welcomeLogo: {
+    width: 260,
+    height: 150,
+    alignSelf: "center",
   },
   heroAccent: {
     width: 34,
     height: 3,
     borderRadius: 2,
-    backgroundColor: "#E98B78",
+    backgroundColor: brandColors.magenta,
     marginTop: 6,
   },
   tagline: {
@@ -811,9 +820,9 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.82)",
+    borderColor: brandColors.magenta,
     borderRadius: 28,
-    backgroundColor: "rgba(255,255,255,0.04)",
+    backgroundColor: "rgba(72,2,162,0.18)",
   },
   signupText: {
     color: "#FFFDFC",
@@ -849,19 +858,16 @@ const styles = StyleSheet.create({
     color: "#FFF8F4",
     fontSize: 13,
   },
-  formWordmark: {
-    color: "#FFF8F4",
-    fontSize: 15,
-    fontWeight: "800",
-    letterSpacing: 3,
-    marginRight: 4,
+  formLogo: {
+    width: 82,
+    height: 48,
   },
   formHero: {
     marginTop: 60,
     marginBottom: 26,
   },
   eyebrow: {
-    color: "#F3B1A2",
+    color: "#FF8ABC",
     fontSize: 9,
     fontWeight: "700",
     letterSpacing: 1.8,
@@ -930,7 +936,7 @@ const styles = StyleSheet.create({
     paddingVertical: 5,
   },
   forgotText: {
-    color: "#F2B7AA",
+    color: "#FF8ABC",
     fontSize: 11,
     fontWeight: "600",
   },
@@ -978,7 +984,7 @@ const styles = StyleSheet.create({
     opacity: 0.7,
   },
   resendConfirmationText: {
-    color: "#F2B7AA",
+    color: "#FF8ABC",
     fontSize: 12,
     fontWeight: "700",
     textDecorationLine: "underline",

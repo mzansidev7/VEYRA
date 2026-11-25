@@ -133,9 +133,65 @@ for account-scoped notification preferences, including delivery channels,
 activity categories, quiet hours, and lock-screen previews. Row-level security
 allows users to manage only their own settings. Security alerts are enforced
 as always enabled. Settings are cached per account for five minutes. These
-preferences are stored but do not deliver push, email, or in-app notifications
-until a trusted notification delivery service and device registration flow are
-connected.
+preferences are stored per account. Staff notifications are delivered in the
+in-app inbox when enabled and the member has opted in to product updates. Push
+delivery additionally requires the member to enable push, grant OS permission,
+and register a device in a supported native app build.
+Expo Go and simulators do not register for remote push; the in-app inbox still
+works there.
+
+Apply
+`supabase/migrations/20261125030000_member_notifications.sql` after the staff
+access and notification-preferences migrations to add private notification
+records, owner-scoped inbox RPCs, and per-member Expo device registrations. Deploy
+`supabase/functions/send-member-notification/index.ts` from the linked
+Supabase project; it checks `notifications.send` server-side and uses the
+service-role key only inside the Edge Function. Build and install a native
+development or production app to test push delivery; no push is sent from Expo
+Go.
+
+Apply `supabase/migrations/20261125040000_notification_links.sql` after the
+member-notifications migration to add optional HTTPS links to in-app
+notifications. Tapping the link opens the system browser; tapping a push
+notification carrying a link opens that HTTPS URL. Non-HTTPS URLs are rejected.
+
+Apply
+`supabase/migrations/20261125060000_notification_unread_badge_and_defaults.sql`
+to expose an authenticated, owner-scoped unread-count RPC for the mobile bell
+and set the database defaults for "News and updates" and "Offers and promotions"
+to enabled. New accounts and accounts without saved preferences default these
+options to enabled; previously saved preference choices are preserved. The
+mobile bell displays the exact unread count (capped visually at 99+) and
+refreshes it when the app returns to the foreground.
+
+Apply
+`supabase/migrations/20261125070000_member_notification_sender.sql` afterward
+to include the staff sender name in the member's notification inbox. If no
+staff membership name is available, the inbox displays "VEYRA Support".
+
+Apply
+`supabase/migrations/20261125160000_member_event_push_notifications.sql`
+after the notification inbox, sender-name, and profile visitor migrations. It
+adds database-triggered in-app and Expo push notifications for likes, matches,
+messages, profile visitors, Video Discovery invitations, and Chemistry
+activity. Delivery respects each member's push, in-app, and event preferences.
+Message previews contain no private message text. The migration enables
+Supabase's `pg_net` extension to queue requests to Expo Push; queued requests
+are sent after the database transaction commits.
+
+The app refreshes a device's Expo push-token registration after sign-in when
+notification permission was already granted. Opening the Notifications inbox
+can request permission for the first time. Install a new native build after
+updating the app; Expo Go does not support remote push delivery.
+
+Android uses a custom VEYRA collapsed, expanded, and heads-up notification
+layout for data-only pushes, which the app posts from its background task.
+Android may defer or skip background work under Doze and other OS restrictions.
+iOS receives visible remote notifications through APNs. Rebuild and install a
+native development or production app after changing the notification
+icon/configuration. Separate Android channels are available for matches,
+messages, activity, account updates, and VEYRA updates; Android users control
+each channel's sound and vibration in system settings.
 
 Apply
 `supabase/migrations/20261120040000_daily_five_discovery.sql`
@@ -299,7 +355,7 @@ calls. Android and iOS require a fresh native build after adding LiveKit.
 
 Before deploying the function, configure `LIVEKIT_URL` (a `wss://` URL),
 `LIVEKIT_API_KEY`, and `LIVEKIT_API_SECRET` as Supabase Edge Function secrets.
-Keep these credentials out of the app and source control. After applying both
+Keep these credentials out of the app and source control. After applying all
 Video Discovery migrations and configuring the secrets, deploy only when
 ready:
 
@@ -307,15 +363,38 @@ ready:
 npx supabase functions deploy video-discovery
 ```
 
-Video Discovery has not been deployed or applied to the production project.
+The `video-discovery` Edge Function has been deployed to production. Apply
+`supabase/migrations/20261125150000_video_discovery_service_role_access.sql`
+to the same Supabase project. This grants the trusted `service_role` read access
+to the privacy and verification fields that the Edge Function uses to construct
+an eligible participant summary. Member-facing table grants and RLS policies
+are unchanged. Deploying Edge Functions does not apply database migrations.
+
+If matching previously failed with `permission denied for table
+user_privacy_settings`, apply this migration, then switch Video Discovery
+availability off and back on for both test accounts and start matching again.
+This clears stale pending searches/sessions through the existing availability
+workflow; it does not delete match, report, or moderation history.
+
+Apply
+`supabase/migrations/20261125190000_video_discovery_and_match_calls.sql`
+after the previous Video Discovery and member-event notification migrations.
+Available, eligible people can now receive discovery invitations without first
+joining the search queue; the searcher and recipient must both accept. Discovery
+requires known profile coordinates and limits pairings to 200 km; members'
+smaller Explore radius settings are still respected. Existing matches can also
+request a consent-based call from their chat header; a
+match-call invitation is revalidated against the active match and block list
+before acceptance and token issuance. Both flows use the existing LiveKit
+session/token path and video-call notifications.
 
 Apply
 `supabase/migrations/20261120140000_match_conversations.sql` after the
 likes-and-matches migration, then redeploy `daily-discovery`. This enables
 match-only text conversations with unread counts, read status, Realtime message
 updates, and block/report/unmatch actions. Users must be active matched
-participants to access or send text messages. Typing and online indicators,
-and push notifications are not implemented.
+participants to access or send text messages. Typing and online indicators are
+not implemented.
 
 Apply
 `supabase/migrations/20261120220000_chat_attachments.sql` after the
@@ -367,7 +446,9 @@ according to the member's visibility settings, and profile photos are served
 with short-lived signed URLs. Likes are persisted across Daily 5 renewals;
 the Likes screen separates incoming likes, sent likes, and mutual matches.
 Mutual matches are durable and visible, and active matches can chat. Match
-notifications are not implemented. Verified identity badges are returned only
+Automatic like, match, and chat notification triggers are not implemented;
+staff-sent notifications are available through the Support Portal. Verified
+identity badges are returned only
 for members approved by a trusted verification source. Profiles can include optional
 interests, languages, work or study, lifestyle details, conversation prompts,
 relationship hopes, and a short voice introduction. Birthdays are kept private;
@@ -382,6 +463,38 @@ as view-only previews. A warning explains they are outside the radius, and
 like/pass actions are disabled. Exact coordinates are never exposed;
 approximate distance is shown only when the member allows it. Distance is a
 straight-line Haversine estimate, not driving distance.
+
+## Support portal data sources
+
+The shared migration
+`supabase/migrations/20261125010000_support_dashboard_sources.sql` adds
+permission-protected support tickets, moderation workflow/history, verification
+status history, and daily member activity tracking for the separate Support
+Portal. It builds on the existing `staff_members`, `staff_has_permission`,
+`user_reports`, `messages`, and `user_verifications` schema. The migration
+keeps private tables inaccessible to browser roles and exposes only validated
+RPCs; it does not add subscription or payment data.
+
+The dashboard aggregate RPC is defined in
+`supabase/migrations/20261125000000_support_dashboard_metrics.sql`. It requires
+`dashboard.view` and separately checks support, moderation, verification and
+audit permissions before returning their respective aggregates. DAU represents
+members who opened the app on the current South African calendar date. Rolling
+30-day active users remain unavailable until 30 days of tracking have elapsed;
+no historical activity is inferred.
+
+Staff use the Support Portal's `/support/tickets` page to search tickets, read
+the member's request, and send replies or update status and priority according
+to `support.view` and `support.manage`. Staff replies are available to the
+ticket owner in Profile → Help & Safety by expanding a recent request. Ticket
+messages remain inaccessible through direct table access.
+
+These are source migrations only and have not been applied to the live
+Supabase project. Verify the target project's migration history and review the
+SQL before applying them. Apply the dashboard metrics migration, support data
+sources migration, then the ticket inbox migration in timestamp order. The
+mobile app and portal will not be able to submit or view replies until the
+required migrations are deployed.
 
 The onboarding photo picker, voice recorder, and selfie capture use native Expo
 modules. Selfie capture uses `expo-camera` and requires camera permission.

@@ -1,15 +1,14 @@
 import { isRunningInExpoGo, registerRootComponent } from "expo";
 import { Platform } from "react-native";
 
+import "./src/data/notificationBackgroundTask";
 import App from "./App";
+import { initializeLiveKit } from "./src/lib/liveKit";
 
-async function registerApp() {
-  if (Platform.OS !== "web" && !isRunningInExpoGo()) {
-    const { registerGlobals } = await import("@livekit/react-native");
-    registerGlobals();
-  }
+registerRootComponent(App);
 
-  registerRootComponent(App);
+if (Platform.OS !== "web" && !isRunningInExpoGo()) {
+  void initializeLiveKit().catch((error: unknown) => {
+    console.error("LiveKit initialization failed.", error);
+  });
 }
-
-void registerApp();

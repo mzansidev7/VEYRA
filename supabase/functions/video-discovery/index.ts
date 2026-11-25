@@ -13,7 +13,7 @@ const corsHeaders = {
 
 const DEFAULT_TIMEZONE = "Africa/Johannesburg";
 const SESSION_SELECT =
-  "id,user_one_id,user_two_id,initiated_by,status,user_one_accepted,user_two_accepted,created_at,expires_at,accepted_at,connected_at,ended_at,end_reason";
+  "id,user_one_id,user_two_id,initiated_by,status,source,user_one_accepted,user_two_accepted,created_at,expires_at,accepted_at,connected_at,ended_at,end_reason";
 
 type Json =
   | string
@@ -78,6 +78,7 @@ type VideoDiscoveryDatabase = {
           | "blocked"
           | "reported"
           | null;
+        source: "discovery" | "match";
       }>;
       discovery_actions: Table<{
         user_id: string;
@@ -132,6 +133,14 @@ type VideoDiscoveryDatabase = {
         };
         Returns: Json;
       };
+      create_video_match_call_invitation: {
+        Args: { p_user_id: string; p_match_id: string };
+        Returns: Json;
+      };
+      video_match_call_pair_is_eligible: {
+        Args: { p_user_id: string; p_candidate_id: string };
+        Returns: boolean;
+      };
     };
     Enums: { [_ in never]: never };
     CompositeTypes: { [_ in never]: never };
@@ -153,6 +162,7 @@ type VideoSession = {
   user_two_id: string;
   initiated_by: string;
   status: string;
+  source: "discovery" | "match";
   user_one_accepted: boolean | null;
   user_two_accepted: boolean | null;
   created_at: string;
@@ -220,6 +230,8 @@ Deno.serve(async (request: Request) => {
         return await setAvailability(adminClient, user.id, body, timezone);
       case "join":
         return await joinQueue(adminClient, user.id, timezone);
+      case "match-call":
+        return await createMatchCallInvitation(adminClient, user.id, body);
       case "cancel":
         return await cancelSearch(adminClient, user.id);
       case "respond":
@@ -343,6 +355,25 @@ async function joinQueue(
   }, 200);
 }
 
+async function createMatchCallInvitation(
+  client: VideoDiscoveryClient,
+  userId: string,
+  body: Record<string, unknown>,
+): Promise<Response> {
+  if (!isUuid(body.matchId)) {
+    return jsonResponse({ error: "Choose a valid active match." }, 400);
+  }
+  const { data, error } = await client.rpc(
+    "create_video_match_call_invitation",
+    { p_user_id: userId, p_match_id: body.matchId },
+  );
+  if (error) return jsonResponse({ error: error.message }, 409);
+  if (!isRecord(data) || !isUuid(data.session_id)) {
+    throw new Error("The video call invitation response was invalid.");
+  }
+  return jsonResponse(await addOtherParticipant(client, data, userId), 200);
+}
+
 async function cancelSearch(
   client: VideoDiscoveryClient,
   userId: string,
@@ -379,6 +410,24 @@ async function respondToSession(
       { error: "The Video Discovery response is invalid." },
       400,
     );
+  }
+
+  if (body.accept) {
+    const { data: session, error: sessionError } = await client
+      .from("video_discovery_sessions")
+      .select("source,user_one_id,user_two_id")
+      .eq("id", body.sessionId)
+      .or(`user_one_id.eq.${userId},user_two_id.eq.${userId}`)
+      .maybeSingle();
+    if (sessionError) {
+      throw new Error(`Could not verify the video invitation: ${sessionError.message}`);
+    }
+    if (session?.source === "match") {
+      const otherUserId = session.user_one_id === userId
+        ? session.user_two_id
+        : session.user_one_id;
+      await assertMatchCallStillEligible(client, userId, otherUserId);
+    }
   }
 
   const { data, error } = await client.rpc(
@@ -574,7 +623,11 @@ async function getCallToken(
   const otherUserId = session.user_one_id === userId
     ? session.user_two_id
     : session.user_one_id;
-  await assertPairStillEligible(client, userId, otherUserId, timezone);
+  if (session.source === "match") {
+    await assertMatchCallStillEligible(client, userId, otherUserId);
+  } else {
+    await assertPairStillEligible(client, userId, otherUserId, timezone);
+  }
 
   const { apiKey, apiSecret, serverUrl, roomService } =
     getLiveKitConfiguration();
@@ -658,6 +711,12 @@ async function markCallConnected(
     Date.parse(session.expires_at) <= Date.now()
   ) {
     return jsonResponse({ error: "This video session is not active." }, 409);
+  }
+  if (session.source === "match") {
+    const otherUserId = session.user_one_id === userId
+      ? session.user_two_id
+      : session.user_one_id;
+    await assertMatchCallStillEligible(client, userId, otherUserId);
   }
 
   const { roomService } = getLiveKitConfiguration();
@@ -941,6 +1000,7 @@ async function addOtherParticipant(
     wasConnected: session.connected_at !== null &&
       session.end_reason !== "reported" &&
       session.end_reason !== "blocked",
+    source: session.source,
     otherParticipant: await getOtherParticipant(client, otherUserId),
   };
 }
@@ -1041,6 +1101,23 @@ async function assertPairStillEligible(
   }
   if (data !== true) {
     throw new Error("This video connection is no longer available.");
+  }
+}
+
+async function assertMatchCallStillEligible(
+  client: VideoDiscoveryClient,
+  userId: string,
+  otherUserId: string,
+): Promise<void> {
+  const { data, error } = await client.rpc(
+    "video_match_call_pair_is_eligible",
+    { p_user_id: userId, p_candidate_id: otherUserId },
+  );
+  if (error) {
+    throw new Error(`Could not verify the active match: ${error.message}`);
+  }
+  if (data !== true) {
+    throw new Error("This match is no longer available for a video call.");
   }
 }
 

@@ -238,7 +238,7 @@ export function subscribeToConversation(
     .on(
       "postgres_changes",
       {
-        event: "INSERT",
+        event: "*",
         schema: "public",
         table: "messages",
         filter: `conversation_id=eq.${conversationId}`,
@@ -249,6 +249,35 @@ export function subscribeToConversation(
 
   return () => {
     void client.removeChannel(channel);
+  };
+}
+
+export function subscribeToConversationList(
+  conversationIds: readonly string[],
+  onChange: () => void,
+): () => void {
+  const client = getClient();
+  const channels = Array.from(new Set(conversationIds)).map(
+    (conversationId) =>
+      client
+        .channel(`conversation-list:${conversationId}`)
+        .on(
+          "postgres_changes",
+          {
+            event: "*",
+            schema: "public",
+            table: "messages",
+            filter: `conversation_id=eq.${conversationId}`,
+          },
+          onChange,
+        )
+        .subscribe((status) => {
+          if (status === "SUBSCRIBED") onChange();
+        }),
+  );
+
+  return () => {
+    channels.forEach((channel) => void client.removeChannel(channel));
   };
 }
 

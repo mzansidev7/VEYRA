@@ -12,6 +12,8 @@ export type PrivacySettings = {
   showVoiceIntro: boolean;
   showCompatibilityScore: boolean;
   showVerificationBadge: boolean;
+  incognitoMode: boolean;
+  profileVisitorHistoryEnabled: boolean;
   readReceipts: boolean;
   allowProfileSharing: boolean;
   messagesFromMatchesOnly: boolean;
@@ -41,6 +43,8 @@ export const DEFAULT_PRIVACY_SETTINGS: PrivacySettings = {
   showVoiceIntro: true,
   showCompatibilityScore: true,
   showVerificationBadge: true,
+  incognitoMode: false,
+  profileVisitorHistoryEnabled: true,
   readReceipts: true,
   allowProfileSharing: true,
   messagesFromMatchesOnly: true,

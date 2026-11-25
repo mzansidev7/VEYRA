@@ -42,7 +42,11 @@ Deno.serve(async (request: Request) => {
   const adminClient = createClient(supabaseUrl, serviceRoleKey, {
     auth: { persistSession: false, autoRefreshToken: false },
   });
-  for (const bucket of ["profile-photos", "profile-voice-intros"]) {
+  for (const bucket of [
+    "profile-photos",
+    "profile-voice-intros",
+    "verification-evidence",
+  ]) {
     const cleanupError = await removeUserFiles(
       adminClient,
       bucket,
@@ -109,20 +113,30 @@ async function removeUserFiles(
 ): Promise<string | null> {
   const paths: string[] = [];
   const pageSize = 100;
-  for (let offset = 0; ; offset += pageSize) {
-    const { data, error } = await client.storage
-      .from(bucket)
-      .list(userId, { limit: pageSize, offset });
-    if (error) return `${bucket}: ${error.message}`;
+  async function collectFolder(folder: string): Promise<string | null> {
+    for (let offset = 0; ; offset += pageSize) {
+      const { data, error } = await client.storage
+        .from(bucket)
+        .list(folder, { limit: pageSize, offset });
+      if (error) return `${bucket}: ${error.message}`;
 
-    paths.push(
-      ...data
-        .filter((entry) => entry.id && !entry.name.startsWith("."))
-        .map((entry) => `${userId}/${entry.name}`),
-    );
-    if (data.length < pageSize) break;
+      for (const entry of data) {
+        if (entry.name.startsWith(".")) continue;
+        const path = `${folder}/${entry.name}`;
+        if (entry.id) {
+          paths.push(path);
+        } else {
+          const nestedError = await collectFolder(path);
+          if (nestedError) return nestedError;
+        }
+      }
+      if (data.length < pageSize) break;
+    }
+    return null;
   }
 
+  const listingError = await collectFolder(userId);
+  if (listingError) return listingError;
   for (let index = 0; index < paths.length; index += pageSize) {
     const { error } = await client.storage
       .from(bucket)

@@ -1,5 +1,13 @@
+export const brandColors = {
+  violet: "#4802A2",
+  magenta: "#FD1566",
+  magentaAccessible: "#C90D53",
+} as const;
+
 export const systemColors = {
   light: {
+    brandViolet: brandColors.violet,
+    brandMagenta: brandColors.magenta,
     primary: "#291D2A",
     primaryLight: "#493A4A",
     secondary: "#DDA8B8",
@@ -20,12 +28,14 @@ export const systemColors = {
     warning: "#D69A45",
     error: "#C75D68",
     info: "#718DBB",
-    like: "#C77F99",
+    like: brandColors.magentaAccessible,
     match: "#DDA8B8",
-    compatibility: "#C9BCE5",
+    compatibility: brandColors.violet,
     online: "#43866A",
   },
   dark: {
+    brandViolet: "#B894EA",
+    brandMagenta: brandColors.magenta,
     primary: "#DDA8B8",
     primaryLight: "#EBC3CE",
     secondary: "#C9BCE5",
@@ -46,9 +56,9 @@ export const systemColors = {
     warning: "#E4B66F",
     error: "#E58A91",
     info: "#9CB5E0",
-    like: "#DDA8B8",
+    like: brandColors.magenta,
     match: "#EBC3CE",
-    compatibility: "#C9BCE5",
+    compatibility: "#B894EA",
     online: "#78B99A",
   },
 } as const;

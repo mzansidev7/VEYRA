@@ -43,6 +43,7 @@ import {
 import { ProfileDetailModal, type ProfilePanel } from "./ProfileDetailModal";
 import { getProfileCompletion } from "./profileCompletion";
 import { useProfileVoiceIntroUrl } from "./useProfileVoiceIntroUrl";
+import { SubscriptionPlans } from "./SubscriptionPlans";
 
 type ProfileScreenProps = {
   profile: LocalDatingProfile | null;
@@ -344,6 +345,8 @@ export function ProfileScreen({
             isLast
           />
         </View>
+
+        <SubscriptionPlans colors={colors} styles={styles} />
 
         <View style={[styles.menuGroup, styles.logoutGroup]}>
           <ProfileMenuItem

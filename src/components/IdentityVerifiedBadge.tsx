@@ -14,12 +14,13 @@ export function IdentityVerifiedBadge({
       accessibilityRole="text"
       accessibilityLabel="Identity Verified. Government identity successfully checked."
       style={{
-        alignSelf: "flex-start",
+        alignSelf: compact ? "center" : "flex-start",
         flexDirection: "row",
         alignItems: "center",
         gap: compact ? 4 : 7,
         paddingHorizontal: compact ? 7 : 11,
         paddingVertical: compact ? 4 : 8,
+        minHeight: compact ? 23 : undefined,
         borderWidth: 1,
         borderColor: `${colors.success}66`,
         borderRadius: 999,

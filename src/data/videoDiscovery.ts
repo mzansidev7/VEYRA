@@ -21,6 +21,7 @@ export type VideoDiscoveryParticipant = {
 
 export type VideoDiscoveryStatus = {
   state: VideoDiscoveryState;
+  source: "discovery" | "match" | null;
   sessionId: string | null;
   queueId: string | null;
   expiresAt: string | null;
@@ -41,6 +42,7 @@ export type VideoCallToken = {
 type VideoDiscoveryOperation =
   | "availability"
   | "join"
+  | "match-call"
   | "cancel"
   | "respond"
   | "status"
@@ -83,6 +85,14 @@ export async function getVideoDiscoveryAvailability(): Promise<boolean> {
 export async function joinVideoDiscovery(): Promise<VideoDiscoveryStatus> {
   return normalizeStatus(
     await invokeVideoDiscovery("join", { timezone: getLocalTimezone() }),
+  );
+}
+
+export async function requestVideoCallWithMatch(
+  matchId: string,
+): Promise<VideoDiscoveryStatus> {
+  return normalizeStatus(
+    await invokeVideoDiscovery("match-call", { matchId }),
   );
 }
 
@@ -253,6 +263,10 @@ function normalizeStatus(value: unknown): VideoDiscoveryStatus {
     !isOptionalString(value.expiresAt) ||
     !isOptionalBoolean(value.myAccepted) ||
     !isOptionalBoolean(value.otherAccepted) ||
+    (value.source !== undefined &&
+      value.source !== null &&
+      value.source !== "discovery" &&
+      value.source !== "match") ||
     typeof value.wasConnected !== "boolean"
   ) {
     throw new Error("The Video Discovery status response was invalid.");
@@ -260,6 +274,9 @@ function normalizeStatus(value: unknown): VideoDiscoveryStatus {
 
   return {
     state: value.state,
+    source: value.source === "discovery" || value.source === "match"
+      ? value.source
+      : null,
     sessionId: value.sessionId,
     queueId: value.queueId,
     expiresAt: value.expiresAt,

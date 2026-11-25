@@ -48,15 +48,15 @@ export const DEFAULT_NOTIFICATION_SETTINGS: NotificationSettings = {
   upcomingDates: true,
   verificationUpdates: true,
   securityAlerts: true,
-  productUpdates: false,
-  promotions: false,
+  productUpdates: true,
+  promotions: true,
   quietHoursEnabled: false,
   quietHoursStart: "22:00",
   quietHoursEnd: "07:00",
   showNotificationPreview: true,
 };
 
-const CACHE_KEY_PREFIX = "veyra:notification-settings:v1:";
+const CACHE_KEY_PREFIX = "veyra:notification-settings:v2:";
 const CACHE_MAX_AGE_MS = 5 * 60 * 1000;
 
 export async function getCachedNotificationSettings(

@@ -21,6 +21,8 @@ const DATABASE_COLUMNS: Record<keyof PrivacySettings, string> = {
   showVoiceIntro: "show_voice_intro",
   showCompatibilityScore: "show_compatibility_score",
   showVerificationBadge: "show_verification_badge",
+  incognitoMode: "incognito_mode",
+  profileVisitorHistoryEnabled: "profile_visitor_history_enabled",
   readReceipts: "read_receipts",
   allowProfileSharing: "allow_profile_sharing",
   messagesFromMatchesOnly: "messages_from_matches_only",

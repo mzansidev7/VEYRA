@@ -5,7 +5,7 @@
     "scheme": "veyra",
     "version": "1.0.0",
     "orientation": "portrait",
-    "icon": "./assets/icon.png",
+    "icon": "./assets/veyra-app-icon-only.png",
     "userInterfaceStyle": "automatic",
     "ios": {
       "bundleIdentifier": "com.mzansidigital.veyra",
@@ -15,16 +15,17 @@
     "android": {
       "package": "com.mzansidigital.veyra",
       "softwareKeyboardLayoutMode": "resize",
+      "googleServicesFile": "./google-services.json",
       "adaptiveIcon": {
         "backgroundColor": "#E6F4FE",
-        "foregroundImage": "./assets/android-icon-foreground.png",
-        "backgroundImage": "./assets/android-icon-background.png",
-        "monochromeImage": "./assets/android-icon-monochrome.png"
+        "foregroundImage": "./assets/VeyraLogo.png",
+        "backgroundImage": "./assets/VeyraLogo.png",
+        "monochromeImage": "./assets/Veyra Leafmark Logo Set.png"
       },
       "predictiveBackGestureEnabled": false
     },
     "web": {
-      "favicon": "./assets/favicon.png"
+      "favicon": "./assets/VeyraLogo.png"
     },
     "platforms": [
       "ios",
@@ -33,6 +34,15 @@
     ],
     "plugins": [
       "expo-apple-authentication",
+      [
+        "expo-notifications",
+        {
+          "icon": "./assets/veyra-notification-icon.png",
+          "color": "#291D2A",
+          "defaultChannel": "veyra_updates",
+          "enableBackgroundRemoteNotifications": true
+        }
+      ],
       [
         "expo-image-picker",
         {

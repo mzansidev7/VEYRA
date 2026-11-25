@@ -33,9 +33,12 @@ yarn-error.*
 # local env files
 .env
 .env*.local
+/google-services.json
+*firebase-adminsdk*.json
 
 # typescript
 *.tsbuildinfo
+*./veyra-71fc8-firebase-adminsdk-fbsvc-45543c43b5.json
 
 # generated native folders
 /ios

@@ -14,6 +14,7 @@ export type CompatibilityBreakdown = {
 
 export type DiscoveryPerson = {
   id: string;
+  accountCreatedAt?: string;
   recommendationId?: string;
   name: string;
   age: number | null;
@@ -47,6 +48,15 @@ export type MatchRecord = {
   id: string;
   person: DiscoveryPerson;
   createdAt: string;
+  lastActivityAt: string;
+};
+
+export type ProfileVisitorRecord = {
+  id: string;
+  person: DiscoveryPerson;
+  firstViewedAt: string;
+  viewedAt: string;
+  hasActiveMatch: boolean;
 };
 
 export type LikesFeed = {
@@ -87,6 +97,102 @@ export async function getLikesFeed(): Promise<LikesFeed> {
     );
   }
   return normalizeLikesFeed(data);
+}
+
+export async function getProfileVisitors(): Promise<ProfileVisitorRecord[]> {
+  const { data, error } = await getSupabaseClient().functions.invoke<unknown>(
+    "daily-discovery",
+    {
+      body: {
+        operation: "profile-visitors-feed",
+        timezone: getLocalTimezone(),
+      },
+    },
+  );
+  if (error) {
+    throw new Error(
+      `Could not load profile visitors: ${await getFunctionErrorMessage(error)}`,
+    );
+  }
+  if (!isRecord(data) || !Array.isArray(data.visitors)) {
+    throw new Error("The profile visitors response was invalid.");
+  }
+  return data.visitors.map((entry) => {
+    if (
+      !isRecord(entry) ||
+      typeof entry.visitor_id !== "string" ||
+      typeof entry.first_viewed_at !== "string" ||
+      Number.isNaN(Date.parse(entry.first_viewed_at)) ||
+      typeof entry.viewed_at !== "string" ||
+      Number.isNaN(Date.parse(entry.viewed_at)) ||
+      typeof entry.active_match !== "boolean"
+    ) {
+      throw new Error("A profile visitor in the response was invalid.");
+    }
+    const person = normalizePeople([entry], false)[0];
+    if (person.id !== entry.visitor_id) {
+      throw new Error("A profile visitor identity did not match its profile.");
+    }
+    return {
+      id: entry.visitor_id,
+      person,
+      firstViewedAt: entry.first_viewed_at,
+      viewedAt: entry.viewed_at,
+      hasActiveMatch: entry.active_match,
+    };
+  });
+}
+
+export async function respondToProfileVisitor(
+  visitorId: string,
+  action: "like" | "pass",
+): Promise<{ matched: boolean }> {
+  const { data, error } = await getSupabaseClient().functions.invoke<unknown>(
+    "daily-discovery",
+    {
+      body: {
+        operation: "profile-visitor-decision",
+        visitorId,
+        action,
+      },
+    },
+  );
+  if (error) {
+    throw new Error(
+      `Could not save your visitor response: ${await getFunctionErrorMessage(error)}`,
+    );
+  }
+  if (
+    !isRecord(data) ||
+    data.success !== true ||
+    typeof data.matched !== "boolean" ||
+    (data.action !== "like" &&
+      data.action !== "pass" &&
+      data.action !== "message")
+  ) {
+    throw new Error("The visitor response was invalid.");
+  }
+  return { matched: data.matched };
+}
+
+export async function recordProfileView(targetUserId: string): Promise<void> {
+  const { data, error } = await getSupabaseClient().functions.invoke<unknown>(
+    "daily-discovery",
+    {
+      body: {
+        operation: "record-profile-view",
+        targetUserId,
+      },
+    },
+  );
+  if (error) {
+    throw new Error(
+      `Could not record this profile visit: ${await getFunctionErrorMessage(error)}`,
+    );
+  }
+  if (!isRecord(data) || data.success !== true || typeof data.recorded !== "boolean") {
+    throw new Error("The profile visit response was invalid.");
+  }
 }
 
 export async function respondToReceivedLike(
@@ -292,12 +398,16 @@ function normalizeLikeRecord(value: unknown): LikeRecord {
 }
 
 function normalizeMatchRecord(value: unknown): MatchRecord {
+  const lastActivityAt =
+    isRecord(value) ? (value.last_activity_at ?? value.created_at) : undefined;
   if (
     !isRecord(value) ||
     typeof value.match_id !== "string" ||
     value.status !== "active" ||
     typeof value.created_at !== "string" ||
-    Number.isNaN(Date.parse(value.created_at))
+    Number.isNaN(Date.parse(value.created_at)) ||
+    typeof lastActivityAt !== "string" ||
+    Number.isNaN(Date.parse(lastActivityAt))
   ) {
     throw new Error("A match in the Likes response was invalid.");
   }
@@ -305,6 +415,7 @@ function normalizeMatchRecord(value: unknown): MatchRecord {
     id: value.match_id,
     person: normalizePeople([value], false)[0],
     createdAt: value.created_at,
+    lastActivityAt,
   };
 }
 
@@ -321,6 +432,9 @@ function normalizePeople(
       !isRecord(entry) ||
       typeof entry.candidate_id !== "string" ||
       typeof entry.nickname !== "string" ||
+      (entry.account_created_at !== undefined &&
+        (typeof entry.account_created_at !== "string" ||
+          Number.isNaN(Date.parse(entry.account_created_at)))) ||
       (entry.age !== null && typeof entry.age !== "number") ||
       (entry.city !== null && typeof entry.city !== "string") ||
       typeof entry.bio !== "string" ||
@@ -371,6 +485,10 @@ function normalizePeople(
 
     return {
       id: entry.candidate_id,
+      accountCreatedAt:
+        typeof entry.account_created_at === "string"
+          ? entry.account_created_at
+          : undefined,
       recommendationId:
         typeof entry.recommendation_id === "string"
           ? entry.recommendation_id

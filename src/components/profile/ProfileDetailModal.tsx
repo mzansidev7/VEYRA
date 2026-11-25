@@ -1,4 +1,5 @@
 import {
+  ActivityIndicator,
   Image,
   Modal,
   Pressable,
@@ -16,7 +17,6 @@ import {
   ChevronLeft,
   ChevronRight,
   Bell,
-  CircleHelp,
   Heart,
   Mail,
   Camera,
@@ -65,9 +65,14 @@ import {
   getVerificationData,
   refreshVerificationData,
 } from "../../data/verificationSettings";
+import {
+  getVideoDiscoveryAvailability,
+  setVideoDiscoveryAvailability,
+} from "../../data/videoDiscovery";
 import { resendSignupConfirmation } from "../../auth/auth";
-import type { SystemColors } from "../../systemColors";
+import { brandColors, type SystemColors } from "../../systemColors";
 import { IdentityVerifiedBadge } from "../IdentityVerifiedBadge";
+import { SupportTicketPanel } from "./SupportTicketPanel";
 import type { ProfileStyles } from "./ProfileScreen";
 import { useProfilePhotoUrls } from "./useProfilePhotoUrls";
 
@@ -121,8 +126,15 @@ export function ProfileDetailModal({
   );
   const [privacyLoading, setPrivacyLoading] = useState(false);
   const [privacySaving, setPrivacySaving] = useState(false);
+  const [privacySavingKey, setPrivacySavingKey] = useState<
+    keyof PrivacySettings | null
+  >(null);
   const [privacyError, setPrivacyError] = useState("");
   const [hasPrivacyData, setHasPrivacyData] = useState(false);
+  const [videoDiscoveryAvailable, setVideoDiscoveryAvailable] = useState(false);
+  const [videoDiscoveryLoading, setVideoDiscoveryLoading] = useState(false);
+  const [videoDiscoverySaving, setVideoDiscoverySaving] = useState(false);
+  const [videoDiscoveryError, setVideoDiscoveryError] = useState("");
   const [blockedUsers, setBlockedUsers] = useState<PrivacyListEntry[]>([]);
   const [hiddenProfiles, setHiddenProfiles] = useState<PrivacyListEntry[]>([]);
   const [confirmAccountDeletion, setConfirmAccountDeletion] = useState(false);
@@ -233,9 +245,10 @@ export function ProfileDetailModal({
 
   useEffect(() => {
     let active = true;
-    if (panel !== "notifications") return () => {
-      active = false;
-    };
+    if (panel !== "notifications")
+      return () => {
+        active = false;
+      };
     if (!userId) {
       setNotificationError("Sign in to manage notification settings.");
       return () => {
@@ -369,7 +382,9 @@ export function ProfileDetailModal({
       return;
     }
 
-    const applyPrivacyData = (data: Awaited<ReturnType<typeof getPrivacyData>>) => {
+    const applyPrivacyData = (
+      data: Awaited<ReturnType<typeof getPrivacyData>>,
+    ) => {
       setPrivacySettings(data.settings);
       setBlockedUsers(data.blockedUsers);
       setHiddenProfiles(data.hiddenProfiles);
@@ -463,6 +478,38 @@ export function ProfileDetailModal({
     };
   }, [panel, userId]);
 
+  useEffect(() => {
+    let active = true;
+    if (panel !== "privacy") return;
+    if (!userId) {
+      setVideoDiscoveryError("Sign in to manage Video Discovery availability.");
+      return;
+    }
+
+    setVideoDiscoveryLoading(true);
+    setVideoDiscoveryError("");
+    void getVideoDiscoveryAvailability()
+      .then((available) => {
+        if (active) setVideoDiscoveryAvailable(available);
+      })
+      .catch((error: unknown) => {
+        if (active) {
+          setVideoDiscoveryError(
+            error instanceof Error
+              ? error.message
+              : "Could not load Video Discovery availability.",
+          );
+        }
+      })
+      .finally(() => {
+        if (active) setVideoDiscoveryLoading(false);
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [panel, userId]);
+
   const updatePrivacySetting = async (
     key: keyof PrivacySettings,
     enabled: boolean,
@@ -472,6 +519,7 @@ export function ProfileDetailModal({
     const updatedSettings = { ...privacySettings, [key]: enabled };
     setPrivacySettings(updatedSettings);
     setPrivacySaving(true);
+    setPrivacySavingKey(key);
     setPrivacyError("");
     try {
       await savePrivacySettings(userId, updatedSettings);
@@ -484,6 +532,27 @@ export function ProfileDetailModal({
       );
     } finally {
       setPrivacySaving(false);
+      setPrivacySavingKey(null);
+    }
+  };
+
+  const updateVideoDiscoveryAvailability = async (enabled: boolean) => {
+    if (!userId || videoDiscoverySaving) return;
+    const previousAvailability = videoDiscoveryAvailable;
+    setVideoDiscoveryAvailable(enabled);
+    setVideoDiscoverySaving(true);
+    setVideoDiscoveryError("");
+    try {
+      await setVideoDiscoveryAvailability(enabled);
+    } catch (error) {
+      setVideoDiscoveryAvailable(previousAvailability);
+      setVideoDiscoveryError(
+        error instanceof Error
+          ? error.message
+          : "Could not update Video Discovery availability.",
+      );
+    } finally {
+      setVideoDiscoverySaving(false);
     }
   };
 
@@ -565,173 +634,175 @@ export function ProfileDetailModal({
 
   return (
     <>
-    <Modal
-      animationType="slide"
-      onRequestClose={onClose}
-      presentationStyle="pageSheet"
-      visible
-    >
-      <SafeAreaView style={styles.modalScreen}>
-        {panel === "blocked-users" || panel === "hidden-profiles" ? (
-          <View style={styles.memberListHeader}>
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel="Back to privacy settings"
-              onPress={onClose}
-              style={styles.memberListBack}
-            >
-              <ChevronLeft color={colors.text} size={23} />
-            </Pressable>
-            <Text style={styles.memberListHeaderTitle}>{title}</Text>
-            <View style={styles.memberListHeaderSpacer} />
-          </View>
-        ) : (
-          <View style={styles.modalHeader}>
-            <Text style={styles.modalTitle}>{title}</Text>
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel="Close"
-              onPress={onClose}
-              style={styles.modalClose}
-            >
-              <X color={colors.textSecondary} size={20} />
-            </Pressable>
-          </View>
-        )}
-        <ScrollView
-          contentContainerStyle={styles.modalContent}
-          showsVerticalScrollIndicator={false}
-        >
-          {panel === "preview" && profile ? (
-            <ProfilePreview
-              profile={profile}
-              age={age}
-              colors={colors}
-              identityVerified={identityVerified}
-              styles={styles}
-              onEdit={() => onEditProfile("profile")}
-            />
-          ) : null}
-          {panel === "dating-dna" && profile ? (
-            <DatingDnaPanel
-              profile={profile}
-              colors={colors}
-              styles={styles}
-              onEdit={() => onEditProfile("dna")}
-            />
-          ) : null}
-          {panel === "preferences" && profile ? (
-            <PreferencesPanel
-              profile={profile}
-              colors={colors}
-              styles={styles}
-              onEdit={() => onEditProfile("preferences")}
-            />
-          ) : null}
-          {panel === "verification" ? (
-            <VerificationPanel
-              data={verificationData}
-              loading={verificationLoading}
-              hasData={hasVerificationData}
-              error={verificationError}
-              colors={colors}
-              styles={styles}
-              onSelect={(step) => setVerificationStep(step)}
-            />
-          ) : null}
-          {panel === "privacy" ? (
-            <PrivacySettingsPanel
-              settings={privacySettings}
-              loading={privacyLoading}
-              hasData={hasPrivacyData}
-              saving={privacySaving}
-              error={privacyError}
-              blockedUsers={blockedUsers}
-              hiddenProfiles={hiddenProfiles}
-              confirmAccountDeletion={confirmAccountDeletion}
-              deletingAccount={deletingAccount}
-              accountDeletionError={accountDeletionError}
-              colors={colors}
-              styles={styles}
-              onChange={updatePrivacySetting}
-              onManageBlockedUsers={onManageBlockedUsers}
-              onManageHiddenProfiles={onManageHiddenProfiles}
-              onRequestAccountDeletion={() => {
-                setAccountDeletionError("");
-                setConfirmAccountDeletion(true);
-              }}
-              onCancelAccountDeletion={() => setConfirmAccountDeletion(false)}
-              onConfirmAccountDeletion={() => void confirmDeleteAccount()}
-            />
-          ) : null}
-          {panel === "blocked-users" ? (
-            <PrivacyMemberGrid
-              entries={blockedUsers}
-              kind="blocked"
-              loading={privacyLoading}
-              error={privacyError}
-              styles={styles}
-              colors={colors}
-              onRemove={removeBlockedUser}
-              disabled={privacySaving}
-            />
-          ) : null}
-          {panel === "hidden-profiles" ? (
-            <PrivacyMemberGrid
-              entries={hiddenProfiles}
-              kind="hidden"
-              loading={privacyLoading}
-              error={privacyError}
-              styles={styles}
-              colors={colors}
-              onRemove={removeHiddenProfile}
-              disabled={privacySaving}
-            />
-          ) : null}
-          {panel === "notifications" ? (
-            <NotificationSettingsPanel
-              settings={notificationSettings}
-              loading={notificationLoading}
-              hasData={notificationHasData}
-              saving={notificationSaving}
-              error={notificationError}
-              colors={colors}
-              styles={styles}
-              onChange={updateNotificationSetting}
-              onSaveQuietHours={(start, end) =>
-                void updateQuietHours(start, end)
-              }
-            />
-          ) : null}
-          {panel === "appearance" ? (
-            <StatusPanel
-              icon={SlidersHorizontal}
-              title="Appearance follows your device"
-              body="VEYRA uses your system appearance and adapts this screen to light or dark mode automatically."
-              colors={colors}
-              styles={styles}
-            />
-          ) : null}
-          {panel === "help" ? (
-            <StatusPanel
-              icon={CircleHelp}
-              title="Help & safety"
-              body="Safety, blocking, reporting, and support tools are not available in this demo yet."
-              colors={colors}
-              styles={styles}
-            />
-          ) : null}
-        </ScrollView>
-      </SafeAreaView>
-    </Modal>
-    <VerificationStepModal
-      step={verificationStep}
-      email={userEmail}
-      data={verificationData}
-      colors={colors}
-      styles={styles}
-      onClose={() => setVerificationStep(null)}
-    />
+      <Modal
+        animationType="slide"
+        onRequestClose={onClose}
+        presentationStyle="pageSheet"
+        visible
+      >
+        <SafeAreaView style={styles.modalScreen}>
+          {panel === "blocked-users" || panel === "hidden-profiles" ? (
+            <View style={styles.memberListHeader}>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Back to privacy settings"
+                onPress={onClose}
+                style={styles.memberListBack}
+              >
+                <ChevronLeft color={colors.text} size={23} />
+              </Pressable>
+              <Text style={styles.memberListHeaderTitle}>{title}</Text>
+              <View style={styles.memberListHeaderSpacer} />
+            </View>
+          ) : (
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>{title}</Text>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Close"
+                onPress={onClose}
+                style={styles.modalClose}
+              >
+                <X color={colors.textSecondary} size={20} />
+              </Pressable>
+            </View>
+          )}
+          <ScrollView
+            contentContainerStyle={styles.modalContent}
+            showsVerticalScrollIndicator={false}
+          >
+            {panel === "preview" && profile ? (
+              <ProfilePreview
+                profile={profile}
+                age={age}
+                colors={colors}
+                identityVerified={identityVerified}
+                styles={styles}
+                onEdit={() => onEditProfile("profile")}
+              />
+            ) : null}
+            {panel === "dating-dna" && profile ? (
+              <DatingDnaPanel
+                profile={profile}
+                colors={colors}
+                styles={styles}
+                onEdit={() => onEditProfile("dna")}
+              />
+            ) : null}
+            {panel === "preferences" && profile ? (
+              <PreferencesPanel
+                profile={profile}
+                colors={colors}
+                styles={styles}
+                onEdit={() => onEditProfile("preferences")}
+              />
+            ) : null}
+            {panel === "verification" ? (
+              <VerificationPanel
+                data={verificationData}
+                loading={verificationLoading}
+                hasData={hasVerificationData}
+                error={verificationError}
+                colors={colors}
+                styles={styles}
+                onSelect={(step) => setVerificationStep(step)}
+              />
+            ) : null}
+            {panel === "privacy" ? (
+              <PrivacySettingsPanel
+                settings={privacySettings}
+                loading={privacyLoading}
+                hasData={hasPrivacyData}
+                saving={privacySaving}
+                savingKey={privacySavingKey}
+                error={privacyError}
+                videoDiscoveryAvailable={videoDiscoveryAvailable}
+                videoDiscoveryLoading={videoDiscoveryLoading}
+                videoDiscoverySaving={videoDiscoverySaving}
+                videoDiscoveryError={videoDiscoveryError}
+                blockedUsers={blockedUsers}
+                hiddenProfiles={hiddenProfiles}
+                confirmAccountDeletion={confirmAccountDeletion}
+                deletingAccount={deletingAccount}
+                accountDeletionError={accountDeletionError}
+                colors={colors}
+                styles={styles}
+                onChange={updatePrivacySetting}
+                onVideoDiscoveryAvailabilityChange={
+                  updateVideoDiscoveryAvailability
+                }
+                onManageBlockedUsers={onManageBlockedUsers}
+                onManageHiddenProfiles={onManageHiddenProfiles}
+                onRequestAccountDeletion={() => {
+                  setAccountDeletionError("");
+                  setConfirmAccountDeletion(true);
+                }}
+                onCancelAccountDeletion={() => setConfirmAccountDeletion(false)}
+                onConfirmAccountDeletion={() => void confirmDeleteAccount()}
+              />
+            ) : null}
+            {panel === "blocked-users" ? (
+              <PrivacyMemberGrid
+                entries={blockedUsers}
+                kind="blocked"
+                loading={privacyLoading}
+                error={privacyError}
+                styles={styles}
+                colors={colors}
+                onRemove={removeBlockedUser}
+                disabled={privacySaving}
+              />
+            ) : null}
+            {panel === "hidden-profiles" ? (
+              <PrivacyMemberGrid
+                entries={hiddenProfiles}
+                kind="hidden"
+                loading={privacyLoading}
+                error={privacyError}
+                styles={styles}
+                colors={colors}
+                onRemove={removeHiddenProfile}
+                disabled={privacySaving}
+              />
+            ) : null}
+            {panel === "notifications" ? (
+              <NotificationSettingsPanel
+                settings={notificationSettings}
+                loading={notificationLoading}
+                hasData={notificationHasData}
+                saving={notificationSaving}
+                error={notificationError}
+                colors={colors}
+                styles={styles}
+                onChange={updateNotificationSetting}
+                onSaveQuietHours={(start, end) =>
+                  void updateQuietHours(start, end)
+                }
+              />
+            ) : null}
+            {panel === "appearance" ? (
+              <StatusPanel
+                icon={SlidersHorizontal}
+                title="Appearance follows your device"
+                body="VEYRA uses your system appearance and adapts this screen to light or dark mode automatically."
+                colors={colors}
+                styles={styles}
+              />
+            ) : null}
+            {panel === "help" ? (
+              <SupportTicketPanel userId={userId} colors={colors} />
+            ) : null}
+          </ScrollView>
+        </SafeAreaView>
+      </Modal>
+      <VerificationStepModal
+        step={verificationStep}
+        email={userEmail}
+        data={verificationData}
+        colors={colors}
+        styles={styles}
+        onClose={() => setVerificationStep(null)}
+      />
     </>
   );
 }
@@ -975,7 +1046,12 @@ function PrivacySettingsPanel({
   loading,
   hasData,
   saving,
+  savingKey,
   error,
+  videoDiscoveryAvailable,
+  videoDiscoveryLoading,
+  videoDiscoverySaving,
+  videoDiscoveryError,
   blockedUsers,
   hiddenProfiles,
   confirmAccountDeletion,
@@ -984,6 +1060,7 @@ function PrivacySettingsPanel({
   colors,
   styles,
   onChange,
+  onVideoDiscoveryAvailabilityChange,
   onManageBlockedUsers,
   onManageHiddenProfiles,
   onRequestAccountDeletion,
@@ -994,7 +1071,12 @@ function PrivacySettingsPanel({
   loading: boolean;
   hasData: boolean;
   saving: boolean;
+  savingKey: keyof PrivacySettings | null;
   error: string;
+  videoDiscoveryAvailable: boolean;
+  videoDiscoveryLoading: boolean;
+  videoDiscoverySaving: boolean;
+  videoDiscoveryError: string;
   blockedUsers: PrivacyListEntry[];
   hiddenProfiles: PrivacyListEntry[];
   confirmAccountDeletion: boolean;
@@ -1003,6 +1085,7 @@ function PrivacySettingsPanel({
   colors: SystemColors;
   styles: ProfileStyles;
   onChange: (key: keyof PrivacySettings, enabled: boolean) => void;
+  onVideoDiscoveryAvailabilityChange: (enabled: boolean) => void;
   onManageBlockedUsers: () => void;
   onManageHiddenProfiles: () => void;
   onRequestAccountDeletion: () => void;
@@ -1056,6 +1139,18 @@ function PrivacySettingsPanel({
     {
       title: "Profile visibility",
       options: [
+        {
+          key: "incognitoMode",
+          title: "Browse profiles incognito",
+          description:
+            "Your profile visits won’t appear in other members’ visitor lists.",
+        },
+        {
+          key: "profileVisitorHistoryEnabled",
+          title: "Profile visitor history",
+          description:
+            "Collect new visits to your profile and show them in Visitors.",
+        },
         {
           key: "showAge",
           title: "Show my age",
@@ -1114,9 +1209,8 @@ function PrivacySettingsPanel({
     <>
       <View style={styles.privacyNotice}>
         <Text style={styles.privacyNoticeText}>
-          Your preferences are saved to your account. Discovery and messaging
-          aren’t live yet, so these settings won’t affect what other members can
-          see until those features are connected.
+          Your preferences are saved to your account and applied to the
+          corresponding VEYRA features.
         </Text>
       </View>
       {loading ? (
@@ -1141,27 +1235,61 @@ function PrivacySettingsPanel({
                       {option.description}
                     </Text>
                   </View>
-                  <Switch
-                    accessibilityLabel={option.title}
-                    disabled={saving || (Boolean(error) && !hasData)}
-                    onValueChange={(enabled) => onChange(option.key, enabled)}
-                    trackColor={{
-                      false: colors.border,
-                      true: colors.secondary,
-                    }}
-                    thumbColor={colors.card}
-                    value={settings[option.key]}
-                  />
+                  {option.key === savingKey ? (
+                    <ActivityIndicator
+                      size="small"
+                      color={brandColors.magenta}
+                    />
+                  ) : (
+                    <Switch
+                      accessibilityLabel={option.title}
+                      disabled={
+                        (Boolean(error) && !hasData) || option.key === savingKey
+                      }
+                      onValueChange={(enabled) => onChange(option.key, enabled)}
+                      trackColor={{
+                        false: colors.border,
+                        true: colors.secondary,
+                      }}
+                      thumbColor={colors.card}
+                      value={settings[option.key]}
+                    />
+                  )}
                 </View>
               ))}
             </View>
           </View>
         ))
       )}
-      {error ? <Text style={styles.privacyError}>{error}</Text> : null}
-      {saving ? (
-        <Text style={styles.privacyStatus}>Saving your changes…</Text>
+      <Text style={styles.privacySectionTitle}>Video Discovery</Text>
+      <View style={styles.privacyGroup}>
+        <View style={[styles.privacyRow, styles.privacyRowLast]}>
+          <View style={styles.privacyCopy}>
+            <Text style={styles.privacyTitle}>Available for video</Text>
+            <Text style={styles.privacyDescription}>
+              Let eligible members invite you to a video introduction. You can
+              turn this off at any time.
+            </Text>
+          </View>
+          {videoDiscoveryLoading || videoDiscoverySaving ? (
+            // Loading indicator while fetching or saving the video discovery availability
+            <ActivityIndicator size="small" color={brandColors.magenta} />
+          ) : (
+            <Switch
+              accessibilityLabel="Video Discovery availability"
+              disabled={videoDiscoveryLoading || videoDiscoverySaving}
+              onValueChange={onVideoDiscoveryAvailabilityChange}
+              trackColor={{ false: colors.border, true: colors.secondary }}
+              thumbColor={colors.card}
+              value={videoDiscoveryAvailable}
+            />
+          )}
+        </View>
+      </View>
+      {videoDiscoveryError ? (
+        <Text style={styles.privacyError}>{videoDiscoveryError}</Text>
       ) : null}
+      {error ? <Text style={styles.privacyError}>{error}</Text> : null}
       <Text style={styles.privacySectionTitle}>Safety & recommendations</Text>
       <View style={styles.privacyGroup}>
         <PrivacyListLink
@@ -1433,9 +1561,7 @@ function NotificationSettingsPanel({
                       </Text>
                       <Switch
                         accessibilityLabel="Enable quiet hours"
-                        disabled={
-                          saving || (Boolean(error) && !hasData)
-                        }
+                        disabled={saving || (Boolean(error) && !hasData)}
                         onValueChange={(enabled) =>
                           onChange("quietHoursEnabled", enabled)
                         }
@@ -1492,8 +1618,8 @@ function NotificationSettingsPanel({
                       </View>
                     </View>
                     <Text style={styles.notificationTimeHint}>
-                      Use 24-hour time (HH:MM). Times are saved when you leave
-                      a field.
+                      Use 24-hour time (HH:MM). Times are saved when you leave a
+                      field.
                     </Text>
                   </View>
                 ) : null}
@@ -1550,10 +1676,7 @@ function NotificationToggle({
 }) {
   return (
     <View
-      style={[
-        styles.notificationRow,
-        isLast && styles.notificationRowLast,
-      ]}
+      style={[styles.notificationRow, isLast && styles.notificationRowLast]}
     >
       <View style={styles.privacyCopy}>
         <Text style={styles.notificationTitle}>{option.title}</Text>
@@ -1755,9 +1878,7 @@ function VerificationPanel({
         "selfie verification",
       ),
       verified: data.photoVerificationStatus === "verified",
-      statusLabel: getVerificationStatusLabel(
-        data.photoVerificationStatus,
-      ),
+      statusLabel: getVerificationStatusLabel(data.photoVerificationStatus),
     },
     {
       icon: Fingerprint,
@@ -1768,15 +1889,15 @@ function VerificationPanel({
         "identity document checks",
       ),
       verified: data.identityVerificationStatus === "verified",
-      statusLabel: getVerificationStatusLabel(
-        data.identityVerificationStatus,
-      ),
+      statusLabel: getVerificationStatusLabel(data.identityVerificationStatus),
     },
   ];
 
   if (loading && !hasData) {
     return (
-      <Text style={styles.privacyStatus}>Loading your verification status…</Text>
+      <Text style={styles.privacyStatus}>
+        Loading your verification status…
+      </Text>
     );
   }
 
@@ -1801,8 +1922,8 @@ function VerificationPanel({
           />
         </View>
         <Text style={styles.verificationSummaryCopy}>
-          Complete verification to help other members feel confident
-          connecting with you.
+          Complete verification to help other members feel confident connecting
+          with you.
         </Text>
       </View>
       {items.map(
@@ -1865,7 +1986,10 @@ function VerificationPanel({
           <Text style={styles.verificationDescription}>
             The badge appears only after identity verification is successfully
             completed. Your current status is{" "}
-            {getVerificationStatusLabel(data.identityVerificationStatus).toLowerCase()}.
+            {getVerificationStatusLabel(
+              data.identityVerificationStatus,
+            ).toLowerCase()}
+            .
           </Text>
         ) : null}
       </View>
@@ -1880,13 +2004,13 @@ function VerificationPanel({
           accessibilityRole="alert"
           style={hasData ? styles.privacyStatus : styles.privacyError}
         >
-          {hasData
-            ? "Showing saved verification status. " + error
-            : error}
+          {hasData ? "Showing saved verification status. " + error : error}
         </Text>
       ) : null}
       {loading && hasData ? (
-        <Text style={styles.privacyStatus}>Refreshing verification status…</Text>
+        <Text style={styles.privacyStatus}>
+          Refreshing verification status…
+        </Text>
       ) : null}
     </>
   );
@@ -1943,11 +2067,7 @@ function VerificationStepModal({
 
   if (step === "photo") {
     return (
-      <PhotoSelfieModal
-        colors={colors}
-        styles={styles}
-        onClose={onClose}
-      />
+      <PhotoSelfieModal colors={colors} styles={styles} onClose={onClose} />
     );
   }
 
@@ -1977,11 +2097,7 @@ function VerificationStepModal({
         >
           <View style={styles.verificationStepHero}>
             <View style={styles.verificationStepIcon}>
-              <detail.icon
-                color={colors.primary}
-                size={30}
-                strokeWidth={1.7}
-              />
+              <detail.icon color={colors.primary} size={30} strokeWidth={1.7} />
             </View>
             <Text style={styles.verificationStepTitle}>{detail.heading}</Text>
             <Text style={styles.verificationStepDescription}>
@@ -2274,9 +2390,7 @@ function PhotoSelfieModal({
               style={styles.verificationStepAction}
             >
               <Text style={styles.verificationStepActionText}>
-                {cameraAllowed
-                  ? "Open camera"
-                  : "Allow camera and continue"}
+                {cameraAllowed ? "Open camera" : "Allow camera and continue"}
               </Text>
             </Pressable>
           )}
@@ -2284,8 +2398,8 @@ function PhotoSelfieModal({
           <View style={styles.verificationPrivacyNote}>
             <ShieldCheck color={colors.success} size={17} />
             <Text style={styles.verificationPrivacyText}>
-              Taking a selfie does not mark photo verification as complete.
-              The temporary photo is discarded when you leave this screen.
+              Taking a selfie does not mark photo verification as complete. The
+              temporary photo is discarded when you leave this screen.
             </Text>
           </View>
         </ScrollView>
@@ -2322,7 +2436,8 @@ function getVerificationStepDetails(
         "Open the email and follow its confirmation link.",
         "Return to VEYRA; your status will update after confirmation.",
       ],
-      privacyNote: "Your email address is private and is never shown on your profile.",
+      privacyNote:
+        "Your email address is private and is never shown on your profile.",
     };
   }
   if (step === "photo") {

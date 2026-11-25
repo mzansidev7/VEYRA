@@ -15,7 +15,6 @@ import {
   Pressable,
   ScrollView,
   StyleSheet,
-  Switch,
   Text,
   View,
 } from "react-native";
@@ -39,7 +38,6 @@ import {
   joinVideoDiscovery,
   reportVideoDiscoveryUser,
   respondToVideoDiscovery,
-  setVideoDiscoveryAvailability,
   submitVideoDiscoveryDecision,
   subscribeToVideoDiscoverySession,
   type VideoCallToken,
@@ -48,6 +46,7 @@ import {
   type VideoDiscoveryStatus,
 } from "../../data/videoDiscovery";
 import { useOnlineStatuses } from "../../data/onlinePresence";
+import { initializeLiveKit } from "../../lib/liveKit";
 import { systemColors, type SystemColors } from "../../systemColors";
 import type { VideoCallRoomProps } from "./VideoCallRoom";
 
@@ -138,6 +137,7 @@ export function VideoDiscoveryScreen({
     setBusy(true);
     setError("");
     try {
+      await initializeLiveKit();
       const token = await getVideoCallToken(sessionId);
       setCallToken(token);
       onCallActive(true);
@@ -205,7 +205,11 @@ export function VideoDiscoveryScreen({
   }, [refreshCurrentStatus, status.sessionId, status.state]);
 
   useEffect(() => {
-    if (status.state !== "searching" && !isActiveSessionState(status.state)) {
+    if (
+      !available &&
+      status.state !== "searching" &&
+      !isActiveSessionState(status.state)
+    ) {
       return;
     }
     const interval = setInterval(
@@ -213,7 +217,7 @@ export function VideoDiscoveryScreen({
       3_000,
     );
     return () => clearInterval(interval);
-  }, [refreshCurrentStatus, status.sessionId, status.state]);
+  }, [available, refreshCurrentStatus, status.sessionId, status.state]);
 
   useEffect(() => {
     let active = true;
@@ -253,33 +257,6 @@ export function VideoDiscoveryScreen({
   useEffect(() => {
     return () => onCallActive(false);
   }, [onCallActive]);
-
-  const updateAvailability = async (enabled: boolean) => {
-    setBusy(true);
-    setError("");
-    setNotice("");
-    try {
-      await setVideoDiscoveryAvailability(enabled);
-      setAvailable(enabled);
-      setNotice(
-        enabled
-          ? "You’re available for compatible video introductions."
-          : "Video Discovery availability is off.",
-      );
-      if (!enabled && status.state === "searching") {
-        const next = await cancelVideoDiscoverySearch();
-        setStatus(next);
-      }
-    } catch (cause) {
-      setError(
-        cause instanceof Error
-          ? cause.message
-          : "Could not update Video Discovery availability.",
-      );
-    } finally {
-      setBusy(false);
-    }
-  };
 
   const startSearch = async () => {
     if (!available || !NATIVE_CALL_SUPPORTED) return;
@@ -508,7 +485,9 @@ export function VideoDiscoveryScreen({
               <Text style={styles.heading}>Meet face-to-face</Text>
               <Text style={styles.subtitle}>
                 A thoughtful video introduction with someone who fits your
-                preferences. You both choose whether to connect.
+                preferences and is within 200 km. People who enable video
+                availability can receive an invitation even when they are not
+                actively searching. You both choose whether to connect.
               </Text>
             </View>
 
@@ -525,23 +504,19 @@ export function VideoDiscoveryScreen({
               </View>
             ) : null}
 
-            <View style={styles.availabilityCard}>
-              <View style={styles.availabilityCopy}>
-                <Text style={styles.cardTitle}>Available for video</Text>
-                <Text style={styles.bodyText}>
-                  Turn this on when you’re ready to meet someone. You can switch
-                  it off any time.
-                </Text>
+            {!loading && !available ? (
+              <View style={styles.availabilityCard}>
+                <View style={styles.availabilityCopy}>
+                  <Text style={styles.cardTitle}>
+                    Video availability is off
+                  </Text>
+                  <Text style={styles.bodyText}>
+                    Turn it on in Profile → Privacy & Visibility when you’re
+                    ready to receive video introductions.
+                  </Text>
+                </View>
               </View>
-              <Switch
-                accessibilityLabel="Video Discovery availability"
-                value={available}
-                disabled={busy || loading || !NATIVE_CALL_SUPPORTED}
-                onValueChange={(value) => void updateAvailability(value)}
-                trackColor={{ false: colors.border, true: colors.secondary }}
-                thumbColor={available ? colors.primary : colors.surface}
-              />
-            </View>
+            ) : null}
 
             {loading ? (
               <View style={styles.loading}>
@@ -574,7 +549,7 @@ export function VideoDiscoveryScreen({
                 onEndInvitation={() => void endInvitation()}
                 onDecision={(action) => void submitDecision(action)}
                 onViewMatches={onViewMatches}
-                canDecide={endedAfterCall}
+                canDecide={endedAfterCall && status.source === "discovery"}
               />
             )}
 
@@ -818,7 +793,7 @@ function SessionCard({
         preferences and compatibility information to find someone suitable.
       </Text>
       <PrimaryButton
-        label={available ? "Start matching" : "Turn on availability first"}
+        label={available ? "Start matching" : "Manage in Privacy & Visibility"}
         disabled={busy || !available}
         onPress={onStartSearch}
         styles={styles}
@@ -1071,6 +1046,7 @@ function SafetyModal({
 function emptyStatus(): VideoDiscoveryStatus {
   return {
     state: "idle",
+    source: null,
     sessionId: null,
     queueId: null,
     expiresAt: null,

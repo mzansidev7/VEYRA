@@ -245,6 +245,71 @@ Deno.serve(async (request: Request) => {
     }
   }
 
+  if (body.operation === "profile-visitors-feed") {
+    const timezone =
+      typeof body.timezone === "string" && body.timezone.length <= 100
+        ? body.timezone
+        : DEFAULT_TIMEZONE;
+    const { data, error } = await adminClient.rpc("get_profile_visitors", {
+      p_user_id: user.id,
+      p_timezone: timezone,
+    });
+    if (error) return jsonResponse({ error: error.message }, 400);
+
+    try {
+      const visitors = await signCards(adminClient, data);
+      return jsonResponse({ visitors }, 200);
+    } catch (error) {
+      return jsonResponse(
+        {
+          error:
+            error instanceof Error
+              ? `Could not prepare profile visitors: ${error.message}`
+              : "Could not prepare profile visitors.",
+        },
+        500,
+      );
+    }
+  }
+
+  if (body.operation === "record-profile-view") {
+    if (
+      typeof body.targetUserId !== "string" ||
+      !isUuid(body.targetUserId)
+    ) {
+      return jsonResponse({ error: "The profile view is invalid." }, 400);
+    }
+    const { data, error } = await adminClient.rpc("record_profile_view", {
+      p_viewer_id: user.id,
+      p_viewed_user_id: body.targetUserId,
+    });
+    if (error) return jsonResponse({ error: error.message }, 409);
+    if (typeof data !== "boolean") {
+      return jsonResponse({ error: "The profile view response was invalid." }, 500);
+    }
+    return jsonResponse({ success: true, recorded: data }, 200);
+  }
+
+  if (body.operation === "profile-visitor-decision") {
+    if (
+      typeof body.visitorId !== "string" ||
+      !isUuid(body.visitorId) ||
+      (body.action !== "like" && body.action !== "pass")
+    ) {
+      return jsonResponse({ error: "The visitor response is invalid." }, 400);
+    }
+    const { data, error } = await adminClient.rpc(
+      "respond_to_profile_visitor",
+      {
+        p_user_id: user.id,
+        p_visitor_id: body.visitorId,
+        p_action: body.action,
+      },
+    );
+    if (error) return jsonResponse({ error: error.message }, 409);
+    return jsonResponse(data, 200);
+  }
+
   if (body.operation === "received-like-decision") {
     if (
       typeof body.senderId !== "string" ||

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { ComponentRef } from "react";
+import type { ComponentRef, ComponentType } from "react";
+import { isRunningInExpoGo } from "expo";
 import {
   ActivityIndicator,
   Image,
@@ -26,6 +27,7 @@ import {
   Send,
   Smile,
   X,
+  Video,
 } from "lucide-react-native";
 import { LinearGradient } from "expo-linear-gradient";
 import * as ImagePicker from "expo-image-picker";
@@ -41,6 +43,7 @@ import {
 import { useVideoPlayer, VideoView } from "expo-video";
 import { IdentityVerifiedBadge } from "../IdentityVerifiedBadge";
 import { blockUser } from "../../data/privacySettings";
+import { reportChatMessage } from "../../data/support";
 import EmojiPicker from "../../lib/EmojiPicker";
 import {
   getChatFeed,
@@ -50,6 +53,7 @@ import {
   sendConversationMessage,
   sendConversationAttachment,
   subscribeToConversation,
+  subscribeToConversationList,
   unmatchConversation,
   type ChatAttachmentKind,
   type ChatConversation,
@@ -59,7 +63,19 @@ import {
   type NewChatMatch,
 } from "../../data/chat";
 import { useOnlineStatuses } from "../../data/onlinePresence";
+import { recordProfileView } from "../../data/dailyDiscovery";
 import { systemColors, type SystemColors } from "../../systemColors";
+import {
+  endVideoDiscoveryCall,
+  getVideoCallToken,
+  getVideoDiscoveryStatus,
+  requestVideoCallWithMatch,
+  respondToVideoDiscovery,
+  type VideoCallToken,
+  type VideoDiscoveryStatus,
+} from "../../data/videoDiscovery";
+import { initializeLiveKit } from "../../lib/liveKit";
+import type { VideoCallRoomProps } from "../video/VideoCallRoom";
 
 type ChatFilter = "all" | "unread" | "new";
 type ActiveConversation = {
@@ -67,7 +83,13 @@ type ActiveConversation = {
   matchId: string;
   person: ChatPerson;
 };
-type SafetyAction = "menu" | "block" | "unmatch" | "report" | null;
+type SafetyAction =
+  | "menu"
+  | "block"
+  | "unmatch"
+  | "report"
+  | "report-message"
+  | null;
 type ReportReason =
   | "inappropriate"
   | "harassment"
@@ -92,15 +114,18 @@ const VOICE_RECORDING_OPTIONS = {
   ...RecordingPresets.HIGH_QUALITY,
   directory: "document" as const,
 };
+const NATIVE_VIDEO_CALLS = Platform.OS !== "web" && !isRunningInExpoGo();
 
 export function ChatScreen({
   userId,
   colors,
   onSessionExpired,
+  onCallActive,
 }: {
   userId: string;
   colors: SystemColors;
   onSessionExpired: () => Promise<void>;
+  onCallActive: (active: boolean) => void;
 }) {
   const styles = useMemo(() => createStyles(colors), [colors]);
   const recorder = useAudioRecorder(VOICE_RECORDING_OPTIONS);
@@ -125,6 +150,9 @@ export function ChatScreen({
   const [isRecording, setIsRecording] = useState(false);
   const [isEmojiPickerVisible, setIsEmojiPickerVisible] = useState(false);
   const [safetyAction, setSafetyAction] = useState<SafetyAction>(null);
+  const [reportedMessageId, setReportedMessageId] = useState<string | null>(
+    null,
+  );
   const [reportReason, setReportReason] =
     useState<ReportReason>("inappropriate");
   const [isSavingSafety, setIsSavingSafety] = useState(false);
@@ -133,6 +161,18 @@ export function ChatScreen({
     useState<PreviewAttachment | null>(null);
   const [notice, setNotice] = useState("");
   const [messageError, setMessageError] = useState("");
+  const [videoCallStatus, setVideoCallStatus] =
+    useState<VideoDiscoveryStatus | null>(null);
+  const [videoCallToken, setVideoCallToken] = useState<VideoCallToken | null>(
+    null,
+  );
+  const [CallRoom, setCallRoom] =
+    useState<ComponentType<VideoCallRoomProps> | null>(null);
+  const [isVideoCallBusy, setIsVideoCallBusy] = useState(false);
+  const [videoCallError, setVideoCallError] = useState("");
+  const videoCallAttempted = useRef<string | null>(null);
+  const videoCallRequestInFlight = useRef(false);
+  const videoCallPollInFlight = useRef(false);
   const scrollRef = useRef<ComponentRef<typeof ScrollView>>(null);
   const composerInputRef = useRef<ComponentRef<typeof TextInput>>(null);
   const sessionExpiryHandled = useRef(false);
@@ -163,6 +203,26 @@ export function ChatScreen({
       ),
     [feed?.conversations, onlineUserIds],
   );
+  const conversationIdsKey = useMemo(
+    () =>
+      (feed?.conversations ?? [])
+        .map((conversation) => conversation.id)
+        .sort()
+        .join(","),
+    [feed?.conversations],
+  );
+
+  useEffect(() => {
+    const targetUserId = profilePerson?.id;
+    if (!targetUserId || targetUserId === userId) return;
+    void recordProfileView(targetUserId).catch((error: unknown) => {
+      setNotice(
+        error instanceof Error
+          ? error.message
+          : "Could not record this profile visit.",
+      );
+    });
+  }, [profilePerson?.id, userId]);
 
   const loadFeed = useCallback(async (background = false) => {
     if (!background) setIsLoading(true);
@@ -231,13 +291,343 @@ export function ChatScreen({
     void loadFeed();
   }, [loadFeed, userId]);
 
+  const startMatchCall = useCallback(async (sessionId: string) => {
+    if (
+      videoCallAttempted.current === sessionId ||
+      videoCallRequestInFlight.current
+    ) return;
+    videoCallRequestInFlight.current = true;
+    videoCallAttempted.current = sessionId;
+    setIsVideoCallBusy(true);
+    setVideoCallError("");
+    try {
+      await initializeLiveKit();
+      setVideoCallToken(await getVideoCallToken(sessionId));
+      onCallActive(true);
+    } catch (cause) {
+      videoCallAttempted.current = null;
+      setVideoCallError(
+        cause instanceof Error ? cause.message : "Could not join this video call.",
+      );
+    } finally {
+      videoCallRequestInFlight.current = false;
+      setIsVideoCallBusy(false);
+    }
+  }, [onCallActive]);
+
+  useEffect(() => {
+    if (!videoCallToken || !NATIVE_VIDEO_CALLS) {
+      setCallRoom(null);
+      return;
+    }
+    let active = true;
+    import("../video/VideoCallRoom")
+      .then((module) => {
+        if (active) setCallRoom(() => module.VideoCallRoom);
+      })
+      .catch((cause: unknown) => {
+        if (active) {
+          setVideoCallError(
+            cause instanceof Error
+              ? cause.message
+              : "Could not load the native video call.",
+          );
+        }
+      });
+    return () => {
+      active = false;
+    };
+  }, [videoCallToken]);
+
+  useEffect(() => {
+    if (!NATIVE_VIDEO_CALLS) return;
+    let active = true;
+    const poll = async () => {
+      if (videoCallPollInFlight.current) return;
+      videoCallPollInFlight.current = true;
+      try {
+        const next = await getVideoDiscoveryStatus();
+        if (!active) return;
+        if (
+          next.source !== "match" ||
+          !next.sessionId ||
+          !["pending_acceptance", "accepted", "connected"].includes(next.state)
+        ) {
+          setVideoCallStatus(null);
+          setVideoCallToken(null);
+          setCallRoom(null);
+          videoCallAttempted.current = null;
+          onCallActive(false);
+          return;
+        }
+        setVideoCallStatus(next);
+        const otherUserId = next.otherParticipant?.userId;
+        const conversation = feed?.conversations.find(
+          (item) => item.person.id === otherUserId,
+        );
+        if (conversation) {
+          setActiveConversation((current) =>
+            current?.id === conversation.id
+              ? current
+              : {
+                id: conversation.id,
+                matchId: conversation.matchId,
+                person: conversation.person,
+              }
+          );
+        }
+        if (
+          next.state === "accepted" &&
+          !videoCallToken &&
+          !CallRoom
+        ) {
+          void startMatchCall(next.sessionId);
+        }
+      } catch (cause) {
+        if (active) {
+          setVideoCallError(
+            cause instanceof Error
+              ? cause.message
+              : "Could not check for video call invitations.",
+          );
+        }
+      } finally {
+        videoCallPollInFlight.current = false;
+      }
+    };
+    void poll();
+    const interval = setInterval(() => void poll(), 3_000);
+    return () => {
+      active = false;
+      clearInterval(interval);
+    };
+  }, [CallRoom, feed?.conversations, onCallActive, startMatchCall, videoCallToken]);
+
+  const requestMatchCall = async () => {
+    if (!activeConversation || isVideoCallBusy) return;
+    if (!NATIVE_VIDEO_CALLS) {
+      setMessageError("Video calls require the VEYRA Android or iOS app build.");
+      return;
+    }
+    setIsVideoCallBusy(true);
+    setVideoCallError("");
+    setMessageError("");
+    try {
+      const invitation = await requestVideoCallWithMatch(
+        activeConversation.matchId,
+      );
+      setVideoCallStatus(invitation);
+    } catch (cause) {
+      setVideoCallError(
+        cause instanceof Error
+          ? cause.message
+          : "Could not request a video call.",
+      );
+    } finally {
+      setIsVideoCallBusy(false);
+    }
+  };
+
+  const respondToMatchCall = async (accept: boolean) => {
+    const sessionId = videoCallStatus?.sessionId;
+    if (!sessionId || isVideoCallBusy) return;
+    setIsVideoCallBusy(true);
+    setVideoCallError("");
+    try {
+      const next = await respondToVideoDiscovery(sessionId, accept);
+      if (accept) {
+        setVideoCallStatus(next);
+        if (next.state === "accepted") void startMatchCall(sessionId);
+      } else {
+        setVideoCallStatus(null);
+      }
+    } catch (cause) {
+      setVideoCallError(
+        cause instanceof Error
+          ? cause.message
+          : "Could not respond to the video call request.",
+      );
+    } finally {
+      setIsVideoCallBusy(false);
+    }
+  };
+
+  const endMatchCall = async () => {
+    const sessionId = videoCallStatus?.sessionId ?? videoCallToken?.sessionId;
+    if (!sessionId || isVideoCallBusy) return;
+    setIsVideoCallBusy(true);
+    setVideoCallError("");
+    try {
+      await endVideoDiscoveryCall(sessionId);
+      setVideoCallToken(null);
+      setCallRoom(null);
+      setVideoCallStatus(null);
+      videoCallAttempted.current = null;
+      onCallActive(false);
+    } catch (cause) {
+      setVideoCallError(
+        cause instanceof Error ? cause.message : "Could not end the video call.",
+      );
+    } finally {
+      setIsVideoCallBusy(false);
+    }
+  };
+
+  useEffect(() => () => onCallActive(false), [onCallActive]);
+
+  const videoCallModal = (
+    <Modal
+      visible={videoCallStatus?.source === "match" && Boolean(videoCallStatus.sessionId)}
+      transparent={false}
+      animationType="slide"
+      onRequestClose={() => {
+        if (videoCallStatus?.myAccepted !== true) {
+          void respondToMatchCall(false);
+        }
+      }}
+    >
+      <View style={[styles.videoCallModal, { backgroundColor: colors.background }]}>
+        {videoCallToken && CallRoom && videoCallStatus?.sessionId === videoCallToken.sessionId ? (
+          <CallRoom
+            token={videoCallToken}
+            colors={colors}
+            otherName={videoCallStatus.otherParticipant?.name ?? "Your match"}
+            onEnd={() => void endMatchCall()}
+            onConnected={() => {
+              setVideoCallStatus((current) =>
+                current ? { ...current, state: "connected" } : current
+              );
+            }}
+            onError={(cause) => setVideoCallError(cause.message)}
+          />
+        ) : (
+          <View style={styles.videoCallPrompt}>
+            <View style={styles.videoCallIcon}>
+              <Video color={colors.primary} size={26} />
+            </View>
+            <Text style={styles.videoCallTitle}>
+              Video call with {videoCallStatus?.otherParticipant?.name ?? "your match"}
+            </Text>
+            <Text style={styles.videoCallCopy}>
+              {videoCallStatus?.state === "accepted"
+                ? "Connecting you now…"
+                : videoCallStatus?.myAccepted
+                  ? "Your request is sent. Waiting for your match to respond."
+                  : "Your match would like to start a video call. You can accept or decline."}
+            </Text>
+            {isVideoCallBusy ? (
+              <ActivityIndicator color={colors.primary} style={styles.videoCallSpinner} />
+            ) : null}
+            {videoCallError ? (
+              <Text style={styles.videoCallError}>{videoCallError}</Text>
+            ) : null}
+            {videoCallError && videoCallStatus?.state === "accepted" ? (
+              <Pressable
+                accessibilityRole="button"
+                disabled={isVideoCallBusy}
+                onPress={() => {
+                  if (videoCallStatus.sessionId) {
+                    videoCallAttempted.current = null;
+                    void startMatchCall(videoCallStatus.sessionId);
+                  }
+                }}
+                style={[styles.videoCallSecondaryAction, { borderColor: colors.border }]}
+              >
+                <Text style={[styles.videoCallSecondaryText, { color: colors.text }]}>
+                  Retry connection
+                </Text>
+              </Pressable>
+            ) : null}
+            {videoCallStatus?.state === "accepted" ? (
+              <Pressable
+                accessibilityRole="button"
+                disabled={isVideoCallBusy}
+                onPress={() => void endMatchCall()}
+                style={[styles.videoCallSecondaryAction, { borderColor: colors.border }]}
+              >
+                <Text style={[styles.videoCallSecondaryText, { color: colors.text }]}>
+                  End call
+                </Text>
+              </Pressable>
+            ) : null}
+            {videoCallStatus?.state === "pending_acceptance" &&
+            videoCallStatus.myAccepted !== true ? (
+              <View style={styles.videoCallActions}>
+                <Pressable
+                  accessibilityRole="button"
+                  disabled={isVideoCallBusy}
+                  onPress={() => void respondToMatchCall(false)}
+                  style={[styles.videoCallSecondaryAction, { borderColor: colors.border }]}
+                >
+                  <Text style={[styles.videoCallSecondaryText, { color: colors.text }]}>
+                    Decline
+                  </Text>
+                </Pressable>
+                <Pressable
+                  accessibilityRole="button"
+                  disabled={isVideoCallBusy}
+                  onPress={() => void respondToMatchCall(true)}
+                  style={[styles.videoCallPrimaryAction, { backgroundColor: colors.primary }]}
+                >
+                  <Text style={[styles.videoCallPrimaryText, { color: colors.textInverse }]}>
+                    Accept call
+                  </Text>
+                </Pressable>
+              </View>
+            ) : videoCallStatus?.state === "pending_acceptance" ? (
+              <Pressable
+                accessibilityRole="button"
+                disabled={isVideoCallBusy}
+                onPress={() => void endMatchCall()}
+                style={[styles.videoCallSecondaryAction, { borderColor: colors.border }]}
+              >
+                <Text style={[styles.videoCallSecondaryText, { color: colors.text }]}>
+                  Cancel request
+                </Text>
+              </Pressable>
+            ) : null}
+          </View>
+        )}
+      </View>
+    </Modal>
+  );
+
+  useEffect(() => {
+    if (activeConversation || !conversationIdsKey) return;
+    let active = true;
+    let refreshTimer: ReturnType<typeof setTimeout> | null = null;
+    const unsubscribe = subscribeToConversationList(
+      conversationIdsKey.split(","),
+      () => {
+        if (refreshTimer) clearTimeout(refreshTimer);
+        refreshTimer = setTimeout(() => {
+          if (active) void loadFeed(true);
+        }, 150);
+      },
+    );
+
+    return () => {
+      active = false;
+      if (refreshTimer) clearTimeout(refreshTimer);
+      unsubscribe();
+    };
+  }, [activeConversation, conversationIdsKey, loadFeed]);
+
   useEffect(() => {
     if (!activeConversation) return;
     setIsLoadingMessages(true);
     void loadMessages(activeConversation.id, true);
-    return subscribeToConversation(activeConversation.id, () => {
-      void loadMessages(activeConversation.id, true);
+    let refreshTimer: ReturnType<typeof setTimeout> | null = null;
+    const unsubscribe = subscribeToConversation(activeConversation.id, () => {
+      if (refreshTimer) clearTimeout(refreshTimer);
+      refreshTimer = setTimeout(() => {
+        void loadMessages(activeConversation.id, true);
+      }, 100);
     });
+    return () => {
+      if (refreshTimer) clearTimeout(refreshTimer);
+      unsubscribe();
+    };
   }, [activeConversation, loadMessages]);
 
   useEffect(() => {
@@ -497,11 +887,21 @@ export function ChatScreen({
       } else if (safetyAction === "unmatch") {
         await unmatchConversation(conversation.id);
         setNotice("You’ve unmatched. This conversation is now closed.");
+      } else if (safetyAction === "report-message") {
+        if (!reportedMessageId) {
+          throw new Error("Select a message to report.");
+        }
+        await reportChatMessage(reportedMessageId, reportReason);
+        setNotice("Message reported. Our team will review it.");
+        setReportedMessageId(null);
+        setSafetyAction(null);
+        return;
       } else {
         await reportConversationMember(conversation.id, reportReason);
         setNotice("Report received. Our team will review it.");
       }
       setSafetyAction(null);
+      setReportedMessageId(null);
       setActiveConversation(null);
       await loadFeed();
     } catch (actionError) {
@@ -518,6 +918,7 @@ export function ChatScreen({
     isSavingSafety,
     loadFeed,
     reportReason,
+    reportedMessageId,
     safetyAction,
     userId,
   ]);
@@ -580,6 +981,20 @@ export function ChatScreen({
                 </Text>
               </View>
             </View>
+          </Pressable>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Request a video call"
+            accessibilityState={{ disabled: isSending || isRecording || isVideoCallBusy }}
+            disabled={isSending || isRecording || isVideoCallBusy}
+            onPress={() => void requestMatchCall()}
+            style={styles.headerIconButton}
+          >
+            {isVideoCallBusy ? (
+              <ActivityIndicator color={colors.primary} size="small" />
+            ) : (
+              <Video color={colors.primary} size={19} />
+            )}
           </Pressable>
           <Pressable
             accessibilityRole="button"
@@ -693,6 +1108,21 @@ export function ChatScreen({
                       )
                     ) : null}
                   </View>
+                  {!isMine ? (
+                    <Pressable
+                      accessibilityRole="button"
+                      onPress={() => {
+                        setReportedMessageId(message.id);
+                        setReportReason("inappropriate");
+                        setSafetyAction("report-message");
+                      }}
+                      style={styles.reportMessageButton}
+                    >
+                      <Text style={styles.reportMessageText}>
+                        Report message
+                      </Text>
+                    </Pressable>
+                  ) : null}
                 </View>
               </View>
             );
@@ -700,6 +1130,11 @@ export function ChatScreen({
           {messageError ? (
             <Text accessibilityRole="alert" style={styles.error}>
               {messageError}
+            </Text>
+          ) : null}
+          {notice ? (
+            <Text accessibilityRole="status" style={styles.notice}>
+              {notice}
             </Text>
           ) : null}
         </ScrollView>
@@ -807,8 +1242,10 @@ export function ChatScreen({
           reportReason={reportReason}
           setReportReason={setReportReason}
           isSaving={isSavingSafety}
+          reportedMessage={safetyAction === "report-message"}
           onConfirm={() => void performSafetyAction()}
         />
+        {videoCallModal}
         <ProfileModal
           styles={styles}
           person={profilePerson}
@@ -828,6 +1265,7 @@ export function ChatScreen({
 
   return (
     <View style={[styles.screen, { backgroundColor: colors.background }]}>
+      {videoCallModal}
       <View style={styles.listHeader}>
         <Text style={styles.eyebrow}>MEANINGFUL CONVERSATIONS</Text>
         <Text style={styles.title}>Messages</Text>
@@ -1377,6 +1815,7 @@ function SafetyModal({
   reportReason,
   setReportReason,
   isSaving,
+  reportedMessage,
   onConfirm,
 }: {
   action: SafetyAction;
@@ -1385,11 +1824,14 @@ function SafetyModal({
   reportReason: ReportReason;
   setReportReason: (reason: ReportReason) => void;
   isSaving: boolean;
+  reportedMessage: boolean;
   onConfirm: () => void;
 }) {
   const title =
     action === "menu"
       ? "Your safety comes first"
+      : action === "report-message"
+      ? "Report this message"
       : action === "report"
       ? "Report this member"
       : action === "block"
@@ -1398,6 +1840,8 @@ function SafetyModal({
   const copy =
     action === "menu"
       ? "Choose how you’d like to manage this connection."
+      : action === "report-message"
+      ? "Your report is private and will be reviewed by VEYRA."
       : action === "report"
       ? "Your report is private and will be reviewed by VEYRA."
       : action === "block"
@@ -1441,7 +1885,7 @@ function SafetyModal({
               <Text style={styles.safetyMenuText}>Report this member</Text>
             </Pressable>
           ) : null}
-          {action === "report"
+          {action === "report" || action === "report-message"
             ? REPORT_REASONS.map((reason) => (
                 <Pressable
                   key={reason.value}
@@ -1464,7 +1908,9 @@ function SafetyModal({
                 </Pressable>
               ))
             : null}
-          {action === "report" || action === "block" ? (
+          {action === "report" ||
+          action === "report-message" ||
+          action === "block" ? (
             <Pressable
               accessibilityRole="button"
               disabled={isSaving}
@@ -1474,7 +1920,7 @@ function SafetyModal({
               <Text style={styles.safetyConfirmText}>
                 {isSaving
                   ? "Saving…"
-                  : action === "report"
+                  : action === "report" || reportedMessage
                     ? "Submit report"
                     : "Block member"}
               </Text>
@@ -2176,6 +2622,16 @@ const createStyles = (colors: SystemColors) =>
     gap: 3,
     marginTop: 4,
   },
+  reportMessageButton: {
+    alignSelf: "flex-start",
+    marginTop: 6,
+    paddingVertical: 3,
+  },
+  reportMessageText: {
+    color: colors.textMuted,
+    fontSize: 10,
+    textDecorationLine: "underline",
+  },
   composerRow: {
     flexDirection: "row",
     alignItems: "flex-end",
@@ -2250,6 +2706,83 @@ const createStyles = (colors: SystemColors) =>
     borderColor: colors.border,
     borderRadius: 20,
     backgroundColor: colors.surface,
+  },
+  videoCallModal: {
+    flex: 1,
+    justifyContent: "center",
+    padding: 18,
+  },
+  videoCallPrompt: {
+    alignItems: "center",
+    width: "100%",
+    maxWidth: 420,
+    alignSelf: "center",
+    padding: 24,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: 24,
+    backgroundColor: colors.surface,
+  },
+  videoCallIcon: {
+    width: 58,
+    height: 58,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: 29,
+    backgroundColor: colors.surfaceSecondary,
+  },
+  videoCallTitle: {
+    marginTop: 16,
+    color: colors.text,
+    fontSize: 18,
+    fontWeight: "700",
+    textAlign: "center",
+  },
+  videoCallCopy: {
+    marginTop: 8,
+    color: colors.textSecondary,
+    fontSize: 12,
+    lineHeight: 18,
+    textAlign: "center",
+  },
+  videoCallSpinner: {
+    marginTop: 14,
+  },
+  videoCallError: {
+    marginTop: 12,
+    color: colors.error,
+    fontSize: 11,
+    textAlign: "center",
+  },
+  videoCallActions: {
+    flexDirection: "row",
+    alignSelf: "stretch",
+    gap: 10,
+    marginTop: 20,
+  },
+  videoCallPrimaryAction: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    minHeight: 44,
+    paddingHorizontal: 14,
+    borderRadius: 14,
+  },
+  videoCallPrimaryText: {
+    fontSize: 12,
+    fontWeight: "700",
+  },
+  videoCallSecondaryAction: {
+    alignItems: "center",
+    justifyContent: "center",
+    minHeight: 44,
+    paddingHorizontal: 18,
+    borderWidth: 1,
+    borderRadius: 14,
+  },
+  videoCallSecondaryText: {
+    fontSize: 12,
+    fontWeight: "600",
   },
   safetyTitle: {
     color: colors.text,
