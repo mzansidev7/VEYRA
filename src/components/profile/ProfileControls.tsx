@@ -15,36 +15,46 @@ import { useProfilePhotoUrls } from "./useProfilePhotoUrls";
 export function ProfilePhotoGrid({
   photos,
   styles,
-  onPress,
+  onOpenPhoto,
+  onEditPhotos,
 }: {
   photos: string[];
   styles: ProfileStyles;
-  onPress: () => void;
+  onOpenPhoto: (index: number, photoUrls: string[]) => void;
+  onEditPhotos: () => void;
 }) {
   const visiblePhotos = photos.slice(0, 3);
-  const { urls, error } = useProfilePhotoUrls(visiblePhotos);
+  const { urls, error } = useProfilePhotoUrls(photos);
+  const resolvedPhotos = photos.map((photo, index) => urls[index] ?? photo);
   return (
     <View>
-      <Pressable
-        accessibilityRole="button"
-        accessibilityLabel={`${photos.length} profile photos. Edit photos.`}
-        onPress={onPress}
-        style={styles.photoGrid}
-      >
+      <View style={styles.photoGrid}>
         <PhotoTile
-          uri={urls[0] ?? visiblePhotos[0]}
+          uri={resolvedPhotos[0]}
           label={visiblePhotos[0] ? undefined : "Add photos"}
           styles={styles}
           featured
+          index={0}
+          onPress={() =>
+            visiblePhotos[0]
+              ? onOpenPhoto(0, resolvedPhotos)
+              : onEditPhotos()
+          }
         />
         <View style={styles.photoSide}>
           <PhotoTile
-            uri={urls[1] ?? visiblePhotos[1]}
+            uri={resolvedPhotos[1]}
             label={visiblePhotos[1] ? undefined : "Add a photo"}
             styles={styles}
+            index={1}
+            onPress={() =>
+              visiblePhotos[1]
+                ? onOpenPhoto(1, resolvedPhotos)
+                : onEditPhotos()
+            }
           />
           <PhotoTile
-            uri={urls[2] ?? visiblePhotos[2]}
+            uri={resolvedPhotos[2]}
             label={
               photos.length > 3
                 ? `+${photos.length - 3} more`
@@ -53,9 +63,15 @@ export function ProfilePhotoGrid({
                   : "Add a photo"
             }
             styles={styles}
+            index={2}
+            onPress={() =>
+              visiblePhotos[2]
+                ? onOpenPhoto(2, resolvedPhotos)
+                : onEditPhotos()
+            }
           />
         </View>
-      </Pressable>
+      </View>
       {error ? (
         <Text accessibilityRole="alert" style={styles.photoLoadError}>
           {error}
@@ -70,14 +86,25 @@ function PhotoTile({
   label,
   styles,
   featured = false,
+  index,
+  onPress,
 }: {
   uri?: string;
   label?: string;
   styles: ProfileStyles;
   featured?: boolean;
+  index: number;
+  onPress: () => void;
 }) {
   return (
-    <View style={[styles.photoTile, featured && styles.featuredPhotoTile]}>
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={
+        uri ? `View profile photo ${index + 1}` : label ?? "Add a photo"
+      }
+      onPress={onPress}
+      style={[styles.photoTile, featured && styles.featuredPhotoTile]}
+    >
       {uri ? (
         <Image source={{ uri }} resizeMode="cover" style={styles.photo} />
       ) : (
@@ -98,7 +125,7 @@ function PhotoTile({
           <Text style={styles.photoHintText}>Your first photo</Text>
         </View>
       ) : null}
-    </View>
+    </Pressable>
   );
 }
 
@@ -136,7 +163,7 @@ export function IdentityCard({
         pressed && styles.pressed,
       ]}
     >
-      <Icon color={colors.like} size={19} strokeWidth={1.8} />
+      <Icon color="#E98B78" size={19} strokeWidth={1.8} />
       <Text style={styles.identityCardTitle}>{title}</Text>
       <Text style={styles.identityCardSubtitle}>{subtitle}</Text>
       <ChevronRight

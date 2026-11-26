@@ -1,18 +1,24 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
+  Image,
+  Modal,
   Pressable,
   ScrollView,
   StyleSheet,
   Text,
   View,
   useColorScheme,
+  useWindowDimensions,
 } from "react-native";
+import type { ScrollViewInstance } from "react-native";
+import { SafeAreaView } from "react-native-safe-area-context";
 import {
   Bell,
   Eye,
   Fingerprint,
   Heart,
   CircleHelp,
+  Download,
   LockKeyhole,
   LogOut,
   MapPin,
@@ -21,6 +27,7 @@ import {
   Settings2,
   ShieldCheck,
   SlidersHorizontal,
+  X,
 } from "lucide-react-native";
 import { useAudioPlayer, useAudioPlayerStatus } from "expo-audio";
 import {
@@ -44,11 +51,15 @@ import { ProfileDetailModal, type ProfilePanel } from "./ProfileDetailModal";
 import { getProfileCompletion } from "./profileCompletion";
 import { useProfileVoiceIntroUrl } from "./useProfileVoiceIntroUrl";
 import { SubscriptionPlans } from "./SubscriptionPlans";
+import { AppReleaseModal } from "./AppReleaseModal";
+
+const PROFILE_ACCENT = "#E98B78";
 
 type ProfileScreenProps = {
   profile: LocalDatingProfile | null;
   userId: string | null;
   userEmail: string | null;
+  initialPanel?: "privacy" | null;
   onEditProfile: (step?: Exclude<OnboardingStep, "complete">) => void;
   onSignOut: () => void;
   onAccountDeleted: () => Promise<void>;
@@ -58,6 +69,7 @@ export function ProfileScreen({
   profile,
   userId,
   userEmail,
+  initialPanel = null,
   onEditProfile,
   onSignOut,
   onAccountDeleted,
@@ -65,9 +77,14 @@ export function ProfileScreen({
   const colorScheme = useColorScheme();
   const colors = systemColors[colorScheme === "dark" ? "dark" : "light"];
   const styles = useMemo(() => createStyles(colors), [colors]);
-  const [panel, setPanel] = useState<ProfilePanel | null>(null);
+  const { width: screenWidth } = useWindowDimensions();
+  const [panel, setPanel] = useState<ProfilePanel | null>(initialPanel);
+  const [viewerPhotos, setViewerPhotos] = useState<string[]>([]);
+  const [viewerIndex, setViewerIndex] = useState(0);
+  const viewerScroll = useRef<ScrollViewInstance>(null);
   const [identityVerified, setIdentityVerified] = useState(false);
   const [verificationLoadError, setVerificationLoadError] = useState("");
+  const [releaseModalVisible, setReleaseModalVisible] = useState(false);
   const voiceReference = profile?.profile.voiceIntroUri ?? "";
   const { url: voiceIntroUrl, error: voiceIntroError } =
     useProfileVoiceIntroUrl(voiceReference);
@@ -126,6 +143,13 @@ export function ProfileScreen({
     onEditProfile(step);
   };
 
+  const openPhotoViewer = (index: number, photoUrls: string[]) => {
+    setViewerPhotos(photoUrls);
+    setViewerIndex(index);
+  };
+
+  const closePhotoViewer = () => setViewerPhotos([]);
+
   return (
     <View style={styles.screen}>
       <View style={styles.screenHeader}>
@@ -151,7 +175,8 @@ export function ProfileScreen({
           <ProfilePhotoGrid
             photos={profile?.profile.photos ?? []}
             styles={styles}
-            onPress={() => editProfile("profile")}
+            onOpenPhoto={openPhotoViewer}
+            onEditPhotos={() => editProfile("profile")}
           />
           <View style={styles.identity}>
             <View style={styles.nameLine}>
@@ -229,7 +254,7 @@ export function ProfileScreen({
               pressed && styles.pressed,
             ]}
           >
-            <Eye color={colors.primary} size={17} />
+            <Eye color={PROFILE_ACCENT} size={17} />
             <Text style={styles.previewButtonText}>Preview my profile</Text>
           </Pressable>
           {voiceReference ? (
@@ -248,9 +273,9 @@ export function ProfileScreen({
                 ]}
               >
                 {voiceStatus.playing ? (
-                  <Pause color={colors.primary} size={16} />
+                  <Pause color={PROFILE_ACCENT} size={16} />
                 ) : (
-                  <Play color={colors.primary} size={16} />
+                  <Play color={PROFILE_ACCENT} size={16} />
                 )}
                 <Text style={styles.previewButtonText}>
                   {voiceStatus.playing
@@ -348,6 +373,18 @@ export function ProfileScreen({
 
         <SubscriptionPlans colors={colors} styles={styles} />
 
+        <View style={styles.menuGroup}>
+          <ProfileMenuItem
+            icon={Download}
+            title="Download new version"
+            subtitle="Browse releases and product updates"
+            colors={colors}
+            styles={styles}
+            onPress={() => setReleaseModalVisible(true)}
+            isLast
+          />
+        </View>
+
         <View style={[styles.menuGroup, styles.logoutGroup]}>
           <ProfileMenuItem
             icon={LogOut}
@@ -360,6 +397,12 @@ export function ProfileScreen({
           />
         </View>
       </ScrollView>
+
+      <AppReleaseModal
+        visible={releaseModalVisible}
+        colors={colors}
+        onClose={() => setReleaseModalVisible(false)}
+      />
 
       <ProfileDetailModal
         panel={panel}
@@ -382,6 +425,70 @@ export function ProfileScreen({
         userEmail={userEmail}
         userId={userId}
       />
+
+      <Modal
+        animationType="fade"
+        onRequestClose={closePhotoViewer}
+        onShow={() => {
+          requestAnimationFrame(() => {
+            viewerScroll.current?.scrollTo({
+              x: viewerIndex * screenWidth,
+              animated: false,
+            });
+          });
+        }}
+        statusBarTranslucent
+        visible={viewerPhotos.length > 0}
+      >
+        <SafeAreaView edges={["top", "bottom"]} style={styles.photoViewer}>
+          <View style={styles.photoViewerHeader}>
+            <Text style={styles.photoViewerCount}>
+              {viewerIndex + 1} / {viewerPhotos.length}
+            </Text>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Close photo viewer"
+              onPress={closePhotoViewer}
+              style={({ pressed }) => [
+                styles.photoViewerClose,
+                pressed && styles.pressed,
+              ]}
+            >
+              <X color="#FFFFFF" size={23} />
+            </Pressable>
+          </View>
+          <ScrollView
+            ref={viewerScroll}
+            horizontal
+            pagingEnabled
+            showsHorizontalScrollIndicator={false}
+            decelerationRate="fast"
+            onMomentumScrollEnd={(event) => {
+              const nextIndex = Math.round(
+                event.nativeEvent.contentOffset.x / screenWidth,
+              );
+              setViewerIndex(
+                Math.max(0, Math.min(nextIndex, viewerPhotos.length - 1)),
+              );
+            }}
+            style={styles.photoViewerPager}
+          >
+            {viewerPhotos.map((photo, index) => (
+              <View
+                key={`${photo}-${index}`}
+                style={[styles.photoViewerPage, { width: screenWidth }]}
+              >
+                <Image
+                  accessibilityLabel={`Profile photo ${index + 1}`}
+                  source={{ uri: photo }}
+                  resizeMode="contain"
+                  style={styles.photoViewerImage}
+                />
+              </View>
+            ))}
+          </ScrollView>
+        </SafeAreaView>
+      </Modal>
     </View>
   );
 }
@@ -414,7 +521,7 @@ const createStyles = (colors: SystemColors) =>
       justifyContent: "space-between",
     },
     screenTitle: {
-      color: colors.text,
+      color: colors.primary,
       fontSize: 21,
       fontWeight: "700",
       letterSpacing: -0.3,
@@ -475,7 +582,7 @@ const createStyles = (colors: SystemColors) =>
       backgroundColor: colors.card,
     },
     addPhotoPlus: {
-      color: colors.primary,
+      color: PROFILE_ACCENT,
       fontSize: 21,
       lineHeight: 24,
     },
@@ -512,6 +619,44 @@ const createStyles = (colors: SystemColors) =>
       color: "#FFFFFF",
       fontSize: 9,
       fontWeight: "600",
+    },
+    photoViewer: {
+      flex: 1,
+      backgroundColor: "#000000",
+    },
+    photoViewerHeader: {
+      minHeight: 48,
+      flexDirection: "row",
+      alignItems: "center",
+      justifyContent: "center",
+      paddingHorizontal: 16,
+    },
+    photoViewerCount: {
+      color: "#FFFFFF",
+      fontSize: 14,
+      fontWeight: "600",
+    },
+    photoViewerClose: {
+      position: "absolute",
+      right: 12,
+      top: 4,
+      width: 40,
+      height: 40,
+      alignItems: "center",
+      justifyContent: "center",
+      borderRadius: 20,
+    },
+    photoViewerPager: {
+      flex: 1,
+    },
+    photoViewerPage: {
+      flex: 1,
+      alignItems: "center",
+      justifyContent: "center",
+    },
+    photoViewerImage: {
+      width: "100%",
+      height: "100%",
     },
     photoLoadError: {
       color: colors.error,
@@ -580,7 +725,7 @@ const createStyles = (colors: SystemColors) =>
     progressFill: {
       height: "100%",
       borderRadius: 3,
-      backgroundColor: colors.secondary,
+      backgroundColor: PROFILE_ACCENT,
     },
     completionHint: {
       color: colors.textSecondary,
@@ -594,10 +739,10 @@ const createStyles = (colors: SystemColors) =>
       justifyContent: "center",
       borderRadius: 22,
       marginTop: 8,
-      backgroundColor: colors.primary,
+      backgroundColor: PROFILE_ACCENT,
     },
     primaryButtonText: {
-      color: colors.textInverse,
+      color: "#331B1D",
       fontSize: 11,
       fontWeight: "700",
     },
@@ -631,7 +776,7 @@ const createStyles = (colors: SystemColors) =>
       marginTop: 3,
     },
     previewButtonText: {
-      color: colors.primary,
+      color: PROFILE_ACCENT,
       fontSize: 11,
       fontWeight: "600",
     },
@@ -800,7 +945,7 @@ const createStyles = (colors: SystemColors) =>
       backgroundColor: colors.secondary,
     },
     memberCardArtworkFourth: {
-      backgroundColor: colors.primaryLight,
+      backgroundColor: PROFILE_ACCENT,
     },
     memberCardAvatar: {
       width: 82,
@@ -813,7 +958,7 @@ const createStyles = (colors: SystemColors) =>
       backgroundColor: colors.surface,
     },
     memberCardInitial: {
-      color: colors.primary,
+      color: PROFILE_ACCENT,
       fontSize: 35,
       fontWeight: "500",
     },
@@ -848,10 +993,10 @@ const createStyles = (colors: SystemColors) =>
       justifyContent: "center",
       borderRadius: 16,
       marginTop: 4,
-      backgroundColor: colors.primary,
+      backgroundColor: PROFILE_ACCENT,
     },
     memberCardActionText: {
-      color: colors.textInverse,
+      color: "#331B1D",
       fontSize: 10,
       fontWeight: "700",
     },
@@ -921,7 +1066,7 @@ const createStyles = (colors: SystemColors) =>
     verificationProgressFill: {
       height: "100%",
       borderRadius: 3,
-      backgroundColor: colors.primary,
+      backgroundColor: PROFILE_ACCENT,
     },
     verificationSummaryCopy: {
       color: colors.textSecondary,
@@ -1011,7 +1156,7 @@ const createStyles = (colors: SystemColors) =>
       backgroundColor: colors.surfaceSecondary,
     },
     verificationStepNumberText: {
-      color: colors.primary,
+      color: PROFILE_ACCENT,
       fontSize: 11,
       fontWeight: "700",
     },
@@ -1027,13 +1172,13 @@ const createStyles = (colors: SystemColors) =>
       justifyContent: "center",
       borderRadius: 25,
       marginTop: 20,
-      backgroundColor: colors.primary,
+      backgroundColor: PROFILE_ACCENT,
     },
     verificationStepActionDisabled: {
       opacity: 0.6,
     },
     verificationStepActionText: {
-      color: colors.textInverse,
+      color: "#331B1D",
       fontSize: 13,
       fontWeight: "700",
     },
@@ -1363,7 +1508,7 @@ const createStyles = (colors: SystemColors) =>
       backgroundColor: colors.surfaceSecondary,
     },
     privacyRemoveText: {
-      color: colors.primary,
+      color: PROFILE_ACCENT,
       fontSize: 11,
       fontWeight: "700",
     },
@@ -1430,29 +1575,6 @@ const createStyles = (colors: SystemColors) =>
       fontSize: 11,
       fontWeight: "700",
     },
-    previewPhotoGrid: {
-      flexDirection: "row",
-      flexWrap: "wrap",
-      gap: 6,
-    },
-    previewPhoto: {
-      width: "31.5%",
-      height: 142,
-      borderRadius: 12,
-      backgroundColor: colors.surfaceSecondary,
-    },
-    previewEmpty: {
-      width: "100%",
-      height: 142,
-      alignItems: "center",
-      justifyContent: "center",
-      borderRadius: 12,
-      backgroundColor: colors.surfaceSecondary,
-    },
-    previewEmptyText: {
-      color: colors.textSecondary,
-      fontSize: 12,
-    },
     previewName: {
       color: colors.text,
       fontSize: 22,
@@ -1477,7 +1599,7 @@ const createStyles = (colors: SystemColors) =>
       backgroundColor: colors.card,
     },
     detailLabel: {
-      color: colors.primary,
+      color: PROFILE_ACCENT,
       fontSize: 11,
       fontWeight: "700",
     },
@@ -1508,10 +1630,10 @@ const createStyles = (colors: SystemColors) =>
       justifyContent: "center",
       borderRadius: 24,
       marginTop: 18,
-      backgroundColor: colors.primary,
+      backgroundColor: PROFILE_ACCENT,
     },
     modalActionText: {
-      color: colors.textInverse,
+      color: "#331B1D",
       fontSize: 12,
       fontWeight: "700",
     },

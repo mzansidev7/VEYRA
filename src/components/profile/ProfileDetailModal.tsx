@@ -1,5 +1,4 @@
 import {
-  ActivityIndicator,
   Image,
   Modal,
   Pressable,
@@ -9,6 +8,7 @@ import {
   TextInput,
   View,
 } from "react-native";
+import VeyraLoader from "../../reusables/VeyraLoader";
 import { useEffect, useRef, useState } from "react";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { CameraView, useCameraPermissions } from "expo-camera";
@@ -70,9 +70,12 @@ import {
   setVideoDiscoveryAvailability,
 } from "../../data/videoDiscovery";
 import { resendSignupConfirmation } from "../../auth/auth";
-import { brandColors, type SystemColors } from "../../systemColors";
+import type { SystemColors } from "../../systemColors";
 import { IdentityVerifiedBadge } from "../IdentityVerifiedBadge";
 import { SupportTicketPanel } from "./SupportTicketPanel";
+import { ProfilePhotoGallery } from "../ProfilePhotoGallery";
+
+const PROFILE_ACCENT = "#E98B78";
 import type { ProfileStyles } from "./ProfileScreen";
 import { useProfilePhotoUrls } from "./useProfilePhotoUrls";
 
@@ -833,21 +836,14 @@ function ProfilePreview({
 
   return (
     <>
-      <View style={styles.previewPhotoGrid}>
-        {profile.profile.photos.slice(0, 6).map((photo, index) => (
-          <Image
-            key={`${photo}-${index}`}
-            source={{ uri: urls[index] ?? photo }}
-            resizeMode="cover"
-            style={styles.previewPhoto}
-          />
-        ))}
-        {!profile.profile.photos.length ? (
-          <View style={styles.previewEmpty}>
-            <Text style={styles.previewEmptyText}>No photos added yet</Text>
-          </View>
-        ) : null}
-      </View>
+      <ProfilePhotoGallery
+        photos={urls}
+        height={320}
+        accentColor={colors.primary}
+        surfaceColor={colors.surfaceSecondary}
+        borderColor={colors.border}
+        textColor={colors.textSecondary}
+      />
       {error ? (
         <Text accessibilityRole="alert" style={styles.photoLoadError}>
           {error}
@@ -963,7 +959,7 @@ function DatingDnaPanel({
   return (
     <>
       <View style={styles.panelIntro}>
-        <Sparkles color={colors.like} size={22} />
+        <Sparkles color={PROFILE_ACCENT} size={22} />
         <Text style={styles.panelIntroTitle}>
           The things that make connection feel like yours.
         </Text>
@@ -1011,7 +1007,7 @@ function PreferencesPanel({
   return (
     <>
       <View style={styles.panelIntro}>
-        <Heart color={colors.like} size={22} />
+        <Heart color={PROFILE_ACCENT} size={22} />
         <Text style={styles.panelIntroTitle}>
           Your preferences help shape the introductions you receive.
         </Text>
@@ -1236,9 +1232,12 @@ function PrivacySettingsPanel({
                     </Text>
                   </View>
                   {option.key === savingKey ? (
-                    <ActivityIndicator
-                      size="small"
-                      color={brandColors.magenta}
+                    <VeyraLoader
+                      size={12}
+                      imageWidth={16}
+                      imageHeight={16}
+                      imageMarginBottom={0}
+                      loaderShown={false}
                     />
                   ) : (
                     <Switch
@@ -1249,7 +1248,7 @@ function PrivacySettingsPanel({
                       onValueChange={(enabled) => onChange(option.key, enabled)}
                       trackColor={{
                         false: colors.border,
-                        true: colors.secondary,
+                        true: PROFILE_ACCENT,
                       }}
                       thumbColor={colors.card}
                       value={settings[option.key]}
@@ -1272,14 +1271,19 @@ function PrivacySettingsPanel({
             </Text>
           </View>
           {videoDiscoveryLoading || videoDiscoverySaving ? (
-            // Loading indicator while fetching or saving the video discovery availability
-            <ActivityIndicator size="small" color={brandColors.magenta} />
+            <VeyraLoader
+              size={12}
+              imageWidth={16}
+              imageHeight={16}
+              imageMarginBottom={0}
+              loaderShown={false}
+            />
           ) : (
             <Switch
               accessibilityLabel="Video Discovery availability"
               disabled={videoDiscoveryLoading || videoDiscoverySaving}
               onValueChange={onVideoDiscoveryAvailabilityChange}
-              trackColor={{ false: colors.border, true: colors.secondary }}
+              trackColor={{ false: colors.border, true: PROFILE_ACCENT }}
               thumbColor={colors.card}
               value={videoDiscoveryAvailable}
             />
@@ -1567,7 +1571,7 @@ function NotificationSettingsPanel({
                         }
                         trackColor={{
                           false: colors.border,
-                          true: colors.secondary,
+                          true: PROFILE_ACCENT,
                         }}
                         thumbColor={colors.card}
                         value={settings.quietHoursEnabled}
@@ -1686,7 +1690,7 @@ function NotificationToggle({
         accessibilityLabel={option.title}
         disabled={disabled}
         onValueChange={(enabled) => onChange(option.key, enabled)}
-        trackColor={{ false: colors.border, true: colors.secondary }}
+        trackColor={{ false: colors.border, true: PROFILE_ACCENT }}
         thumbColor={colors.card}
         value={value}
       />
@@ -1776,7 +1780,7 @@ function PrivacyMemberGrid({
     return (
       <View style={styles.memberListEmpty}>
         <View style={styles.memberListEmptyIcon}>
-          <Heart color={colors.primary} size={25} strokeWidth={1.7} />
+          <Heart color={PROFILE_ACCENT} size={25} strokeWidth={1.7} />
         </View>
         <Text style={styles.memberListEmptyTitle}>{emptyTitle}</Text>
         <Text style={styles.memberListEmptyBody}>{emptyBody}</Text>
@@ -1911,7 +1915,7 @@ function VerificationPanel({
               {completedCount} of 3 complete
             </Text>
           </View>
-          <ShieldCheck color={colors.primary} size={27} strokeWidth={1.7} />
+          <ShieldCheck color={PROFILE_ACCENT} size={27} strokeWidth={1.7} />
         </View>
         <View style={styles.verificationProgressTrack}>
           <View
@@ -1941,7 +1945,7 @@ function VerificationPanel({
               ]}
             >
               <View style={styles.verificationIcon}>
-                <Icon color={colors.primary} size={20} strokeWidth={1.8} />
+                <Icon color={PROFILE_ACCENT} size={20} strokeWidth={1.8} />
               </View>
               <View style={styles.verificationCopy}>
                 <Text style={styles.verificationTitle}>{title}</Text>
@@ -2097,7 +2101,7 @@ function VerificationStepModal({
         >
           <View style={styles.verificationStepHero}>
             <View style={styles.verificationStepIcon}>
-              <detail.icon color={colors.primary} size={30} strokeWidth={1.7} />
+              <detail.icon color={PROFILE_ACCENT} size={30} strokeWidth={1.7} />
             </View>
             <Text style={styles.verificationStepTitle}>{detail.heading}</Text>
             <Text style={styles.verificationStepDescription}>
@@ -2294,7 +2298,7 @@ function PhotoSelfieModal({
         >
           <View style={styles.verificationStepHero}>
             <View style={styles.verificationStepIcon}>
-              <Camera color={colors.primary} size={30} strokeWidth={1.7} />
+              <Camera color={PROFILE_ACCENT} size={30} strokeWidth={1.7} />
             </View>
             <Text style={styles.verificationStepTitle}>
               {selfieUri ? "Your selfie" : "Take a selfie"}
@@ -2530,7 +2534,7 @@ function StatusPanel({
   return (
     <View style={styles.statusPanel}>
       <View style={styles.statusIcon}>
-        <Icon color={colors.primary} size={24} strokeWidth={1.8} />
+        <Icon color={PROFILE_ACCENT} size={24} strokeWidth={1.8} />
       </View>
       <Text style={styles.statusTitle}>{title}</Text>
       <Text style={styles.statusBody}>{body}</Text>

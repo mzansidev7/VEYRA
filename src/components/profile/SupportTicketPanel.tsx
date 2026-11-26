@@ -1,12 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
-  ActivityIndicator,
   Pressable,
   StyleSheet,
   Text,
   TextInput,
   View,
 } from "react-native";
+import VeyraLoader from "../../reusables/VeyraLoader";
 import {
   getMySupportTicketDetail,
   getMySupportTickets,
@@ -16,6 +16,8 @@ import {
   type SupportTicketSummary,
 } from "../../data/support";
 import type { SystemColors } from "../../systemColors";
+
+const SUPPORT_ACCENT = "#E98B78";
 
 const categories: { value: SupportCategory; label: string }[] = [
   { value: "account", label: "Account" },
@@ -293,7 +295,13 @@ export function SupportTicketPanel({
         style={[styles.submitButton, saving && styles.disabled]}
       >
         {saving ? (
-          <ActivityIndicator color={colors.textInverse} size="small" />
+          <VeyraLoader
+            size={12}
+            imageWidth={16}
+            imageHeight={16}
+            imageMarginBottom={0}
+            loaderShown={false}
+          />
         ) : (
           <Text style={styles.submitText}>Send support request</Text>
         )}
@@ -302,7 +310,15 @@ export function SupportTicketPanel({
       <View style={styles.ticketSection}>
         <Text style={styles.sectionTitle}>Your recent requests</Text>
         {loading ? (
-          <ActivityIndicator color={colors.primary} style={styles.loader} />
+          <View style={styles.loader}>
+            <VeyraLoader
+              size="small"
+              imageWidth={24}
+              imageHeight={24}
+              imageMarginBottom={0}
+              loaderShown={false}
+            />
+          </View>
         ) : tickets.length ? (
           tickets.slice(0, 5).map((ticket) => (
             <View key={ticket.id} style={styles.ticketItem}>
@@ -329,7 +345,13 @@ export function SupportTicketPanel({
               {selectedTicketId === ticket.id ? (
                 <View style={styles.conversation}>
                   {detailLoading ? (
-                    <ActivityIndicator color={colors.primary} size="small" />
+                    <VeyraLoader
+                      size={12}
+                      imageWidth={16}
+                      imageHeight={16}
+                      imageMarginBottom={0}
+                      loaderShown={false}
+                    />
                   ) : detailError ? (
                     <Text accessibilityRole="alert" style={styles.error}>
                       {detailError}
@@ -392,11 +414,11 @@ function createStyles(colors: SystemColors) {
       paddingVertical: 8,
     },
     categorySelected: {
-      backgroundColor: colors.primary,
-      borderColor: colors.primary,
+      backgroundColor: SUPPORT_ACCENT,
+      borderColor: SUPPORT_ACCENT,
     },
     categoryText: { color: colors.textSecondary, fontSize: 12 },
-    categoryTextSelected: { color: colors.textInverse, fontWeight: "600" },
+    categoryTextSelected: { color: "#331B1D", fontWeight: "600" },
     input: {
       backgroundColor: colors.inputBackground,
       borderColor: colors.border,
@@ -418,7 +440,7 @@ function createStyles(colors: SystemColors) {
     errorBlock: { gap: 6 },
     retryButton: { alignSelf: "flex-start", paddingVertical: 5 },
     retryText: {
-      color: colors.primary,
+      color: SUPPORT_ACCENT,
       fontSize: 12,
       fontWeight: "600",
       textDecorationLine: "underline",
@@ -431,7 +453,7 @@ function createStyles(colors: SystemColors) {
     },
     submitButton: {
       alignItems: "center",
-      backgroundColor: colors.primary,
+      backgroundColor: SUPPORT_ACCENT,
       borderRadius: 12,
       justifyContent: "center",
       marginTop: 10,
@@ -439,7 +461,7 @@ function createStyles(colors: SystemColors) {
       paddingHorizontal: 16,
     },
     submitText: {
-      color: colors.textInverse,
+      color: "#331B1D",
       fontSize: 14,
       fontWeight: "700",
     },
@@ -469,7 +491,7 @@ function createStyles(colors: SystemColors) {
     ticketCopy: { flex: 1, gap: 4 },
     ticketSubject: { color: colors.text, fontSize: 13, fontWeight: "600" },
     ticketMeta: { color: colors.textMuted, fontSize: 11 },
-    ticketStatus: { color: colors.primary, fontSize: 11, fontWeight: "600" },
+    ticketStatus: { color: SUPPORT_ACCENT, fontSize: 11, fontWeight: "600" },
     conversation: {
       backgroundColor: colors.surfaceSecondary,
       borderRadius: 12,
@@ -478,7 +500,7 @@ function createStyles(colors: SystemColors) {
       padding: 12,
     },
     conversationLabel: {
-      color: colors.primary,
+      color: SUPPORT_ACCENT,
       fontSize: 11,
       fontWeight: "700",
     },

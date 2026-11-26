@@ -12,6 +12,8 @@ import type { SystemColors } from "../../systemColors";
 import { ProfileMenuItem } from "./ProfileControls";
 import type { ProfileStyles } from "./ProfileScreen";
 
+const PROFILE_ACCENT = "#E98B78";
+
 type Plan = {
   name: string;
   price: string;
@@ -137,7 +139,7 @@ export function SubscriptionPlans({
           >
             <View style={styles.heading}>
               <View style={styles.headingIcon}>
-                <Sparkles color={colors.like} size={17} />
+                <Sparkles color={PROFILE_ACCENT} size={17} />
               </View>
               <View style={styles.headingCopy}>
                 <Text style={styles.title}>Choose how you want to discover</Text>
@@ -162,7 +164,7 @@ export function SubscriptionPlans({
                   <View
                     style={[
                       styles.popularBadge,
-                      { backgroundColor: colors.brandMagenta },
+                      { backgroundColor: PROFILE_ACCENT },
                     ]}
                   >
                     <Crown color="#1D1720" size={11} />
@@ -275,7 +277,7 @@ const createStyles = (colors: SystemColors) =>
       backgroundColor: colors.card,
     },
     popularCard: {
-      borderColor: colors.brandViolet,
+      borderColor: PROFILE_ACCENT,
     },
     popularBadge: {
       alignSelf: "flex-start",
@@ -286,7 +288,7 @@ const createStyles = (colors: SystemColors) =>
       paddingVertical: 4,
       borderRadius: 10,
       marginBottom: 8,
-      backgroundColor: colors.brandMagenta,
+      backgroundColor: PROFILE_ACCENT,
     },
     popularBadgeText: {
       color: "#1D1720",

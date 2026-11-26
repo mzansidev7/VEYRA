@@ -17,6 +17,7 @@ export type DiscoveryPerson = {
   accountCreatedAt?: string;
   recommendationId?: string;
   name: string;
+  gender?: string | null;
   age: number | null;
   city: string | null;
   occupation: string;
@@ -432,6 +433,9 @@ function normalizePeople(
       !isRecord(entry) ||
       typeof entry.candidate_id !== "string" ||
       typeof entry.nickname !== "string" ||
+      (entry.gender !== undefined &&
+        entry.gender !== null &&
+        typeof entry.gender !== "string") ||
       (entry.account_created_at !== undefined &&
         (typeof entry.account_created_at !== "string" ||
           Number.isNaN(Date.parse(entry.account_created_at)))) ||
@@ -494,6 +498,7 @@ function normalizePeople(
           ? entry.recommendation_id
           : undefined,
       name: entry.nickname,
+      gender: typeof entry.gender === "string" ? entry.gender : null,
       age: entry.age,
       city: entry.city,
       occupation: entry.occupation,

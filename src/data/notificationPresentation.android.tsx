@@ -50,6 +50,14 @@ const veyraNotification = createCustomNotification<MemberNotificationPayload>(
             >
               {title}
             </Text>
+            <Text
+              color="#514651"
+              maxLines={1}
+              overflow="ellipsis"
+              style={{ fontSize: 12 }}
+            >
+              {body}
+            </Text>
           </Column>
         </Row>
       ),
@@ -101,6 +109,14 @@ const veyraNotification = createCustomNotification<MemberNotificationPayload>(
               style={{ fontSize: 14, fontWeight: "600" }}
             >
               {title}
+            </Text>
+            <Text
+              color="#514651"
+              maxLines={2}
+              overflow="ellipsis"
+              style={{ fontSize: 12 }}
+            >
+              {body}
             </Text>
           </Column>
         </Row>

@@ -1,6 +1,5 @@
 import { useMemo, useState } from "react";
 import {
-  ActivityIndicator,
   Platform,
   Pressable,
   ScrollView,
@@ -11,6 +10,7 @@ import {
 } from "react-native";
 import * as Location from "expo-location";
 import type { SystemColors } from "../systemColors";
+import VeyraLoader from "../reusables/VeyraLoader";
 import {
   SOUTH_AFRICAN_CITIES,
   type CityOption,
@@ -142,7 +142,15 @@ export function CityPicker({ city, province, onSelect, colors }: Props) {
         onPress={() => void useCurrentLocation()}
         style={[styles.gpsButton, { borderColor: colors.border }]}
       >
-        {locating ? <ActivityIndicator color={colors.primary} /> : null}
+        {locating ? (
+          <VeyraLoader
+            size={14}
+            imageWidth={18}
+            imageHeight={18}
+            imageMarginBottom={0}
+            loaderShown={false}
+          />
+        ) : null}
         <Text style={[styles.gpsText, { color: colors.primary }]}>
           {locating ? "Finding your location…" : "Use my current location"}
         </Text>

@@ -5,7 +5,7 @@
     "scheme": "veyra",
     "version": "1.0.0",
     "orientation": "portrait",
-    "icon": "./assets/veyra-app-icon-only.png",
+    "icon": "./assets/veyra-heart-transparent.png",
     "userInterfaceStyle": "automatic",
     "ios": {
       "bundleIdentifier": "com.mzansidigital.veyra",
@@ -20,12 +20,12 @@
         "backgroundColor": "#E6F4FE",
         "foregroundImage": "./assets/VeyraLogo.png",
         "backgroundImage": "./assets/VeyraLogo.png",
-        "monochromeImage": "./assets/Veyra Leafmark Logo Set.png"
+        "monochromeImage": "./assets/veyra-heart-transparent.png"
       },
       "predictiveBackGestureEnabled": false
     },
     "web": {
-      "favicon": "./assets/VeyraLogo.png"
+      "favicon": "./assets/veyra-heart-transparent.png"
     },
     "platforms": [
       "ios",

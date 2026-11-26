@@ -39,6 +39,12 @@ export type VideoCallToken = {
   tokenExpiresInSeconds: number;
 };
 
+export type VideoDiscoveryHistoryItem = {
+  sessionId: string;
+  endedAt: string;
+  participant: VideoDiscoveryParticipant;
+};
+
 type VideoDiscoveryOperation =
   | "availability"
   | "join"
@@ -46,6 +52,7 @@ type VideoDiscoveryOperation =
   | "cancel"
   | "respond"
   | "status"
+  | "history"
   | "call-token"
   | "call-connected"
   | "end-call"
@@ -115,6 +122,29 @@ export async function getVideoDiscoveryStatus(
   return normalizeStatus(
     await invokeVideoDiscovery("status", sessionId ? { sessionId } : {}),
   );
+}
+
+export async function getVideoDiscoveryHistory(): Promise<
+  VideoDiscoveryHistoryItem[]
+> {
+  const data = await invokeVideoDiscovery("history");
+  if (!isRecord(data) || !Array.isArray(data.history)) {
+    throw new Error("The Video Discovery history response was invalid.");
+  }
+  return data.history.map((item) => {
+    if (
+      !isRecord(item) ||
+      typeof item.sessionId !== "string" ||
+      typeof item.endedAt !== "string"
+    ) {
+      throw new Error("A Video Discovery history item was invalid.");
+    }
+    return {
+      sessionId: item.sessionId,
+      endedAt: item.endedAt,
+      participant: normalizeParticipant(item.participant),
+    };
+  });
 }
 
 export async function getVideoCallToken(

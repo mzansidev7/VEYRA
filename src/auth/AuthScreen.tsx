@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import {
-  ActivityIndicator,
   Dimensions,
   Image,
   ImageBackground,
@@ -25,6 +24,7 @@ import type { AuthFormMode, EmailSignupResult } from "./auth";
 import { BirthdayField } from "./BirthdayField";
 import { isAdultBirthday } from "../data/localProfile";
 import { brandColors, systemColors } from "../systemColors";
+import VeyraLoader from "../reusables/VeyraLoader";
 
 WebBrowser.maybeCompleteAuthSession();
 
@@ -566,7 +566,13 @@ function PrimaryButton({
       ]}
     >
       {loading ? (
-        <ActivityIndicator color="#171315" />
+        <VeyraLoader
+          size={12}
+          imageWidth={16}
+          imageHeight={16}
+          imageMarginBottom={0}
+          loaderShown={false}
+        />
       ) : (
         <View style={styles.buttonContents}>
           <View style={styles.buttonIcon}>{leading}</View>

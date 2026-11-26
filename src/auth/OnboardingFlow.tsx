@@ -1,6 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
-  ActivityIndicator,
   Image,
   KeyboardAvoidingView,
   Platform,
@@ -32,6 +31,7 @@ import {
 } from "../data/localProfile";
 import { useProfilePhotoUrls } from "../components/profile/useProfilePhotoUrls";
 import { systemColors, type SystemColors } from "../systemColors";
+import VeyraLoader from "../reusables/VeyraLoader";
 import { BirthdayField } from "./BirthdayField";
 import { CityPicker } from "./CityPicker";
 
@@ -59,7 +59,6 @@ const INTENTIONS = [
 const GENDERS = ["Woman", "Man", "Non-binary", "Self-describe"];
 const RELATIONSHIP_GOALS = [
   "Long-term partnership",
-  "Meaningful connection",
   "Marriage",
   "Still figuring it out",
 ];
@@ -794,7 +793,7 @@ export function OnboardingFlow({
             <>
               <OptionSection
                 styles={styles}
-                title="What are you hoping to find?"
+                title="Which relationship goal feels right for you?"
                 options={RELATIONSHIP_GOALS}
                 selected={profile.datingDNA.relationshipGoals}
                 onToggle={(value) =>
@@ -952,7 +951,13 @@ export function OnboardingFlow({
             ]}
           >
             {saving ? (
-              <ActivityIndicator color={colors.textInverse} />
+              <VeyraLoader
+                size={12}
+                imageWidth={16}
+                imageHeight={16}
+                imageMarginBottom={0}
+                loaderShown={false}
+              />
             ) : (
               <Text style={styles.continueText}>
                 {step === "preferences" ? "Meet my Daily 5" : "Continue"}

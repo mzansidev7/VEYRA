@@ -86,6 +86,10 @@ type VideoDiscoveryDatabase = {
         action: string;
         source: string;
       }>;
+      blocked_users: Table<{
+        blocker_id: string;
+        blocked_id: string;
+      }>;
     };
     Views: { [_ in never]: never };
     Functions: {
@@ -238,6 +242,8 @@ Deno.serve(async (request: Request) => {
         return await respondToSession(adminClient, user.id, body);
       case "status":
         return await getSessionStatus(adminClient, user.id, body.sessionId);
+      case "history":
+        return await getVideoDiscoveryHistory(adminClient, user.id);
       case "call-token":
         return await getCallToken(adminClient, user.id, body, timezone);
       case "call-connected":
@@ -530,6 +536,69 @@ async function getSessionStatus(
     }
   }
   return getQueueStatus(client, userId);
+}
+
+async function getVideoDiscoveryHistory(
+  client: VideoDiscoveryClient,
+  userId: string,
+): Promise<Response> {
+  const { data: sessions, error } = await client
+    .from("video_discovery_sessions")
+    .select(SESSION_SELECT)
+    .eq("source", "discovery")
+    .eq("status", "ended")
+    .not("connected_at", "is", null)
+    .or(`user_one_id.eq.${userId},user_two_id.eq.${userId}`)
+    .order("ended_at", { ascending: false })
+    .limit(20);
+  if (error) {
+    throw new Error(`Could not load Video Discovery history: ${error.message}`);
+  }
+
+  const connectedSessions = (sessions ?? [])
+    .filter((session) =>
+      session.end_reason !== "reported" && session.end_reason !== "blocked"
+    );
+  const otherUserIds = connectedSessions.map((session) =>
+    session.user_one_id === userId ? session.user_two_id : session.user_one_id
+  );
+  const { data: blocks, error: blockError } = otherUserIds.length
+    ? await client
+      .from("blocked_users")
+      .select("blocker_id,blocked_id")
+      .or(`blocker_id.eq.${userId},blocked_id.eq.${userId}`)
+    : { data: [], error: null };
+  if (blockError) {
+    throw new Error(
+      `Could not check Video Discovery history privacy: ${blockError.message}`,
+    );
+  }
+  const blockedUserIds = new Set(
+    (blocks ?? []).map((block) =>
+      block.blocker_id === userId ? block.blocked_id : block.blocker_id
+    ),
+  );
+  const visibleSessions = connectedSessions
+    .filter((session) => {
+      const otherUserId = session.user_one_id === userId
+        ? session.user_two_id
+        : session.user_one_id;
+      return !blockedUserIds.has(otherUserId);
+    })
+    .slice(0, 5);
+  const history = await Promise.all(
+    visibleSessions.map(async (session) => {
+      const otherUserId = session.user_one_id === userId
+        ? session.user_two_id
+        : session.user_one_id;
+      return {
+        sessionId: session.id,
+        endedAt: session.ended_at ?? session.connected_at!,
+        participant: await getOtherParticipant(client, otherUserId),
+      };
+    }),
+  );
+  return jsonResponse({ history }, 200);
 }
 
 async function getQueueStatus(

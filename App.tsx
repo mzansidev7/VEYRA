@@ -10,7 +10,6 @@ import {
 } from "react";
 import {
   Animated,
-  ActivityIndicator,
   Easing,
   Image,
   ImageBackground,
@@ -24,7 +23,6 @@ import {
   useColorScheme,
   useWindowDimensions,
 } from "react-native";
-import type { ScrollViewInstance } from "react-native";
 import { SafeAreaProvider, SafeAreaView } from "react-native-safe-area-context";
 import type { User } from "@supabase/supabase-js";
 import {
@@ -36,8 +34,11 @@ import {
   EllipsisVertical,
   ExternalLink,
   Heart,
+  HeartHandshake,
+  LockKeyhole,
   MessageCircle,
   RefreshCw,
+  SlidersHorizontal,
   Sparkles,
   UserRound,
   Video,
@@ -60,9 +61,11 @@ import { supabaseAuth, supabaseClient } from "./src/lib/supabaseClient";
 import { OnboardingFlow } from "./src/auth/OnboardingFlow";
 import { IdentityVerifiedBadge } from "./src/components/IdentityVerifiedBadge";
 import { ChatScreen } from "./src/components/chat/ChatScreen";
+import { getChatFeed } from "./src/data/chat";
 import { VideoDiscoveryScreen } from "./src/components/video/VideoDiscoveryScreen";
 import { ChemistryScreen } from "./src/components/chemistry/ChemistryScreen";
 import { ProfileScreen } from "./src/components/profile/ProfileScreen";
+import { ProfilePhotoGallery } from "./src/components/ProfilePhotoGallery";
 import { getDatingProfile, saveDatingProfile } from "./src/data/datingProfile";
 import {
   getNextOnboardingStep,
@@ -91,12 +94,20 @@ import {
 import { removePrivacySettingsCache } from "./src/asyncStore/profileStore/privacySettingsStore";
 import { removeNotificationSettingsCache } from "./src/asyncStore/profileStore/notificationSettingsStore";
 import {
+  getCachedLikesFeed,
+  getCachedProfileVisitors,
+  removeLikesTabCache,
+  saveLikesFeedCache,
+  saveProfileVisitorsCache,
+} from "./src/asyncStore/likesTabStore";
+import {
   addMemberNotificationDeepLinkListener,
   addMemberNotificationReceivedListener,
   addMemberNotificationResponseListener,
   clearPushNotificationRegistrationCache,
   getMemberNotifications,
   getUnreadMemberNotificationCount,
+  markAllMemberNotificationsRead,
   markMemberNotificationRead,
   openMemberNotificationLink,
   registerPushNotifications,
@@ -114,8 +125,9 @@ import {
   systemColors,
   type SystemColors,
 } from "./src/systemColors";
+import VeyraLoader from "./src/reusables/VeyraLoader";
 
-type Tab = "discover" | "video" | "likes" | "chats" | "chemistry" | "profile";
+type Tab = "discover" | "video" | "likes" | "chats" | "profile";
 type DiscoveryMode = "daily" | "explore";
 type LikesSection = "likes" | "matches" | "visitors";
 type LikeDirection = "received" | "sent";
@@ -175,7 +187,10 @@ function notificationTimeLabel(createdAt: string): string {
   const timestamp = new Date(createdAt).getTime();
   if (!Number.isFinite(timestamp)) return "Recently";
 
-  const elapsedMinutes = Math.max(0, Math.floor((Date.now() - timestamp) / 60_000));
+  const elapsedMinutes = Math.max(
+    0,
+    Math.floor((Date.now() - timestamp) / 60_000),
+  );
   if (elapsedMinutes < 1) return "Just now";
   if (elapsedMinutes < 60) {
     return `${elapsedMinutes} minute${elapsedMinutes === 1 ? "" : "s"} ago`;
@@ -428,6 +443,7 @@ function AppContent() {
               removeLocalDatingProfile(user.id),
               removePrivacySettingsCache(user.id),
               removeNotificationSettingsCache(user.id),
+              removeLikesTabCache(user.id),
               clearPushNotificationRegistrationCache(user.id),
               removeVerificationDataCache(user.id),
             ]);
@@ -487,9 +503,26 @@ function DiscoveryApp({
   const profileColors = systemColors[isDark ? "dark" : "light"];
   const [activeTab, setActiveTab] = useState<Tab>("discover");
   const [isVideoCallActive, setIsVideoCallActive] = useState(false);
+  const [pendingChatPersonId, setPendingChatPersonId] = useState<string | null>(
+    null,
+  );
+  const [pendingChemistryMatchId, setPendingChemistryMatchId] = useState<
+    string | null
+  >(null);
+  const [isChemistryOpen, setIsChemistryOpen] = useState(false);
+  useEffect(() => {
+    if (activeTab !== "chats" && isChemistryOpen) {
+      setIsChemistryOpen(false);
+      setPendingChemistryMatchId(null);
+    }
+  }, [activeTab, isChemistryOpen]);
+  const [profilePanelToOpen, setProfilePanelToOpen] = useState<
+    "privacy" | null
+  >(null);
   const [isNotificationInboxVisible, setIsNotificationInboxVisible] =
     useState(false);
   const [unreadNotificationCount, setUnreadNotificationCount] = useState(0);
+  const [unreadChatCount, setUnreadChatCount] = useState(0);
   const [selectedNotificationId, setSelectedNotificationId] = useState<
     string | null
   >(null);
@@ -501,12 +534,16 @@ function DiscoveryApp({
   const [notificationError, setNotificationError] = useState("");
   const [pushSetupMessage, setPushSetupMessage] = useState("");
   const [isLoadingNotifications, setIsLoadingNotifications] = useState(false);
+  const [isMarkingAllNotificationsRead, setIsMarkingAllNotificationsRead] =
+    useState(false);
   const [notificationRefreshKey, setNotificationRefreshKey] = useState(0);
   const [unreadCountRefreshKey, setUnreadCountRefreshKey] = useState(0);
+  const [chatUnreadRefreshKey, setChatUnreadRefreshKey] = useState(0);
   const filteredNotifications = useMemo(
     () =>
       memberNotifications.filter((notification) => {
-        if (notificationFilter === "unread") return notification.read_at === null;
+        if (notificationFilter === "unread")
+          return notification.read_at === null;
         if (notificationFilter === "read") return notification.read_at !== null;
         return true;
       }),
@@ -518,9 +555,16 @@ function DiscoveryApp({
   const [likesFeed, setLikesFeed] = useState<LikesFeed | null>(null);
   const [likesSection, setLikesSection] = useState<LikesSection>("likes");
   const [likeDirection, setLikeDirection] = useState<LikeDirection>("received");
+  const [matchActivity, setMatchActivity] = useState<{
+    newMatchIds: Set<string>;
+    unreadMatchIds: Set<string>;
+  }>({ newMatchIds: new Set(), unreadMatchIds: new Set() });
+  const [matchActivityError, setMatchActivityError] = useState("");
   const [profileVisitors, setProfileVisitors] = useState<
     ProfileVisitorRecord[]
   >([]);
+  const profileVisitorsRef = useRef(profileVisitors);
+  profileVisitorsRef.current = profileVisitors;
   const [visitorFilter, setVisitorFilter] = useState<VisitorFilter>("all");
   const [likesError, setLikesError] = useState("");
   const [likesMessage, setLikesMessage] = useState("");
@@ -533,13 +577,15 @@ function DiscoveryApp({
   const [selectedLikeProfile, setSelectedLikeProfile] = useState<{
     person: Person;
     canRespond: boolean;
+    source?: DiscoveryMode;
   } | null>(null);
-  const [profileDetailsPhotoIndex, setProfileDetailsPhotoIndex] = useState(0);
   const [exploreProfileIndex, setExploreProfileIndex] = useState(0);
   const [isLoadingDailyFive, setIsLoadingDailyFive] = useState(true);
   const [isLoadingExplore, setIsLoadingExplore] = useState(false);
   const [dailyFiveError, setDailyFiveError] = useState("");
   const [exploreError, setExploreError] = useState("");
+  const [isExploreFiltersExpanded, setIsExploreFiltersExpanded] =
+    useState(false);
   const [exploreRadiusKm, setExploreRadiusKm] = useState(
     localProfile?.preferences.exploreRadiusKm ?? 50,
   );
@@ -558,6 +604,10 @@ function DiscoveryApp({
   const [superLikeTargetId, setSuperLikeTargetId] = useState<string | null>(
     null,
   );
+  const [likedYouTargetId, setLikedYouTargetId] = useState<string | null>(null);
+  const [likedYouBadgePersonId, setLikedYouBadgePersonId] = useState<
+    string | null
+  >(null);
   const [presenceError, setPresenceError] = useState("");
   const [clock, setClock] = useState(Date.now());
   const [editingStep, setEditingStep] = useState<Exclude<
@@ -568,10 +618,17 @@ function DiscoveryApp({
   const swipeY = useRef(new Animated.Value(0)).current;
   const superLikeProgress = useRef(new Animated.Value(0)).current;
   const superLikePulseActive = useRef(false);
-  const profileDetailsPhotoScroll = useRef<ScrollViewInstance>(null);
-  const profileDetailsPhotoIndexRef = useRef(0);
+  const likedYouProgress = useRef(new Animated.Value(0)).current;
+  const likedYouBadgeProgress = useRef(new Animated.Value(0)).current;
+  const animatedLikedYouIds = useRef(new Set<string>());
   const likesLoadAttempt = useRef(0);
+  const likesLoadInFlight = useRef<Promise<void> | null>(null);
   const visitorsLoadAttempt = useRef(0);
+  const visitorsLoadInFlight = useRef<Promise<void> | null>(null);
+  const likesCacheHydration = useRef<{
+    userId: string;
+    promise: Promise<void>;
+  } | null>(null);
   const optimisticSentLikes = useRef(new Map<string, LikeRecord>());
   const hasLoadedDailyFive = useRef(false);
   const dailyFiveLoadInFlight = useRef(false);
@@ -590,24 +647,82 @@ function DiscoveryApp({
       : (exploreFeed?.profiles[exploreProfileIndex] ?? null);
   const incomingLikes = likesFeed?.incoming ?? [];
   const sentLikes = likesFeed?.sent ?? [];
-  const filteredProfileVisitors = profileVisitors.filter((visitor) => {
-    if (visitorFilter === "new") return isNewVisitor(visitor.firstViewedAt);
-    if (visitorFilter === "recent") return isRecentVisitor(visitor.viewedAt);
-    return true;
+  const orderedMatches = [...(likesFeed?.matches ?? [])].sort((left, right) => {
+    const leftIsNew = matchActivity.newMatchIds.has(left.id);
+    const rightIsNew = matchActivity.newMatchIds.has(right.id);
+    if (leftIsNew !== rightIsNew) return leftIsNew ? -1 : 1;
+    const leftHasUnread = matchActivity.unreadMatchIds.has(left.id);
+    const rightHasUnread = matchActivity.unreadMatchIds.has(right.id);
+    if (leftHasUnread !== rightHasUnread) return leftHasUnread ? -1 : 1;
+    return Date.parse(right.lastActivityAt) - Date.parse(left.lastActivityAt);
   });
-  const activeProfileCount =
-    likesSection === "likes"
-      ? likeDirection === "received"
-        ? incomingLikes.length
-        : sentLikes.length
-      : likesSection === "matches"
-        ? (likesFeed?.matches.length ?? 0)
-        : filteredProfileVisitors.length;
-  const isSingleProfileResult = activeProfileCount === 1;
+  const filteredProfileVisitors = profileVisitors
+    .filter((visitor) => {
+      if (visitorFilter === "new") return isNewVisitor(visitor.firstViewedAt);
+      if (visitorFilter === "recent") return isRecentVisitor(visitor.viewedAt);
+      return true;
+    })
+    .sort(
+      (left, right) => Date.parse(right.viewedAt) - Date.parse(left.viewedAt),
+    );
   const currentPersonAlreadyLiked =
     currentPerson !== null &&
     (likedBackUserIds.has(currentPerson.id) ||
       sentLikes.some((like) => like.person.id === currentPerson.id));
+  const currentPersonLikedYou =
+    currentPerson !== null &&
+    incomingLikes.some((like) => like.person.id === currentPerson.id);
+
+  useEffect(() => {
+    const personId = currentPerson?.id;
+    if (!personId || !currentPersonLikedYou) {
+      setLikedYouTargetId(null);
+      setLikedYouBadgePersonId(null);
+      return;
+    }
+    if (animatedLikedYouIds.current.has(personId)) {
+      setLikedYouBadgePersonId(personId);
+      return;
+    }
+
+    setLikedYouBadgePersonId(null);
+    setLikedYouTargetId(personId);
+    likedYouProgress.setValue(0);
+    let badgeAnimation: Animated.CompositeAnimation | null = null;
+    const animation = Animated.timing(likedYouProgress, {
+      toValue: 1,
+      duration: 3200,
+      easing: Easing.linear,
+      useNativeDriver: true,
+    });
+    animation.start(({ finished }) => {
+      if (finished) {
+        animatedLikedYouIds.current.add(personId);
+        setLikedYouTargetId((targetId) =>
+          targetId === personId ? null : targetId,
+        );
+        setLikedYouBadgePersonId(personId);
+        likedYouBadgeProgress.setValue(0);
+        badgeAnimation = Animated.timing(likedYouBadgeProgress, {
+          toValue: 1,
+          duration: 450,
+          easing: Easing.out(Easing.cubic),
+          useNativeDriver: true,
+        });
+        badgeAnimation.start();
+      }
+    });
+
+    return () => {
+      animation.stop();
+      badgeAnimation?.stop();
+    };
+  }, [
+    currentPerson?.id,
+    currentPersonLikedYou,
+    likedYouBadgeProgress,
+    likedYouProgress,
+  ]);
   const presenceTargetIds = useMemo(
     () =>
       [
@@ -690,59 +805,185 @@ function DiscoveryApp({
     }
   }, []);
 
-  const loadLikes = useCallback(async () => {
-    const attempt = ++likesLoadAttempt.current;
-    setIsLoadingLikes(true);
-    setLikesError("");
-    try {
-      const feed = await getLikesFeed();
-      if (attempt !== likesLoadAttempt.current) return;
-      const serverSentIds = new Set(feed.sent.map((like) => like.person.id));
-      for (const id of serverSentIds) optimisticSentLikes.current.delete(id);
-      const optimisticSent = Array.from(optimisticSentLikes.current.values());
-      setLikesFeed({
-        ...feed,
-        sent: [
-          ...optimisticSent.filter(
-            (like) => !serverSentIds.has(like.person.id),
-          ),
-          ...feed.sent,
-        ],
-      });
-    } catch (error) {
-      if (attempt === likesLoadAttempt.current) {
-        setLikesError(
-          error instanceof Error ? error.message : "Could not load Likes.",
+  const hydrateLikesCache = useCallback(() => {
+    if (likesCacheHydration.current?.userId === userId) {
+      return likesCacheHydration.current.promise;
+    }
+
+    const promise = (async () => {
+      const [likesResult, visitorsResult] = await Promise.allSettled([
+        getCachedLikesFeed(userId),
+        getCachedProfileVisitors(userId),
+      ]);
+      if (likesResult.status === "fulfilled") {
+        if (likesResult.value) setLikesFeed(likesResult.value);
+      } else {
+        console.error(
+          "Could not read the cached Likes feed.",
+          likesResult.reason,
         );
       }
+      if (visitorsResult.status === "fulfilled") {
+        if (visitorsResult.value) {
+          profileVisitorsRef.current = visitorsResult.value;
+          setProfileVisitors(visitorsResult.value);
+        }
+      } else {
+        console.error(
+          "Could not read the cached profile visitors.",
+          visitorsResult.reason,
+        );
+      }
+    })();
+    likesCacheHydration.current = { userId, promise };
+    return promise;
+  }, [userId]);
+
+  const loadLikes = useCallback(async () => {
+    if (likesLoadInFlight.current) {
+      await likesLoadInFlight.current;
+      return;
+    }
+
+    const attempt = ++likesLoadAttempt.current;
+    setIsLoadingLikes(true);
+    const request = (async () => {
+      try {
+        await hydrateLikesCache();
+        setLikesError("");
+        const feed = await getLikesFeed();
+        if (attempt !== likesLoadAttempt.current) return;
+        const serverSentIds = new Set(feed.sent.map((like) => like.person.id));
+        for (const id of serverSentIds) optimisticSentLikes.current.delete(id);
+        const optimisticSent = Array.from(optimisticSentLikes.current.values());
+        const updatedFeed = {
+          ...feed,
+          sent: [
+            ...optimisticSent.filter(
+              (like) => !serverSentIds.has(like.person.id),
+            ),
+            ...feed.sent,
+          ],
+        };
+        setLikesFeed(updatedFeed);
+        try {
+          await saveLikesFeedCache(userId, updatedFeed);
+        } catch (cacheError) {
+          console.error("Could not save the Likes feed cache.", cacheError);
+        }
+      } catch (error) {
+        if (attempt === likesLoadAttempt.current) {
+          setLikesError(
+            error instanceof Error ? error.message : "Could not load Likes.",
+          );
+        }
+      } finally {
+        if (attempt === likesLoadAttempt.current) setIsLoadingLikes(false);
+      }
+    })();
+    likesLoadInFlight.current = request;
+    try {
+      await request;
     } finally {
-      if (attempt === likesLoadAttempt.current) setIsLoadingLikes(false);
+      if (likesLoadInFlight.current === request) {
+        likesLoadInFlight.current = null;
+      }
+    }
+  }, [hydrateLikesCache, userId]);
+
+  const loadProfileVisitors = useCallback(async () => {
+    if (visitorsLoadInFlight.current) {
+      await visitorsLoadInFlight.current;
+      return;
+    }
+
+    const attempt = ++visitorsLoadAttempt.current;
+    const request = (async () => {
+      try {
+        await hydrateLikesCache();
+        setIsLoadingVisitors(true);
+        setLikesError("");
+        const visitors = await getProfileVisitors();
+        if (attempt === visitorsLoadAttempt.current) {
+          profileVisitorsRef.current = visitors;
+          setProfileVisitors(visitors);
+          try {
+            await saveProfileVisitorsCache(userId, visitors);
+          } catch (cacheError) {
+            console.error(
+              "Could not save the profile visitors cache.",
+              cacheError,
+            );
+          }
+        }
+      } catch (error) {
+        if (attempt === visitorsLoadAttempt.current) {
+          setLikesError(
+            error instanceof Error
+              ? error.message
+              : "Could not load profile visitors.",
+          );
+        }
+      } finally {
+        if (attempt === visitorsLoadAttempt.current) {
+          setIsLoadingVisitors(false);
+        }
+      }
+    })();
+    visitorsLoadInFlight.current = request;
+    try {
+      await request;
+    } finally {
+      if (visitorsLoadInFlight.current === request) {
+        visitorsLoadInFlight.current = null;
+      }
+    }
+  }, [hydrateLikesCache, userId]);
+
+  const loadMatchActivity = useCallback(async () => {
+    setMatchActivityError("");
+    try {
+      const feed = await getChatFeed();
+      setMatchActivity({
+        newMatchIds: new Set(feed.newMatches.map((match) => match.matchId)),
+        unreadMatchIds: new Set(
+          feed.conversations
+            .filter((conversation) => conversation.unreadCount > 0)
+            .map((conversation) => conversation.matchId),
+        ),
+      });
+    } catch (error) {
+      setMatchActivityError(
+        error instanceof Error
+          ? error.message
+          : "Could not load match conversation activity.",
+      );
     }
   }, []);
 
-  const loadProfileVisitors = useCallback(async () => {
-    const attempt = ++visitorsLoadAttempt.current;
-    setIsLoadingVisitors(true);
-    setLikesError("");
-    try {
-      const visitors = await getProfileVisitors();
-      if (attempt === visitorsLoadAttempt.current) {
-        setProfileVisitors(visitors);
-      }
-    } catch (error) {
-      if (attempt === visitorsLoadAttempt.current) {
-        setLikesError(
-          error instanceof Error
-            ? error.message
-            : "Could not load profile visitors.",
+  useEffect(() => {
+    let active = true;
+    void getChatFeed()
+      .then((feed) => {
+        if (!active) return;
+        setUnreadChatCount(
+          feed.conversations.reduce(
+            (total, conversation) =>
+              total +
+              (conversation.archivedAt === null ? conversation.unreadCount : 0),
+            0,
+          ),
         );
-      }
-    } finally {
-      if (attempt === visitorsLoadAttempt.current) {
-        setIsLoadingVisitors(false);
-      }
-    }
-  }, []);
+      })
+      .catch((loadError: unknown) => {
+        if (active) {
+          console.error("Could not load unread chat count.", loadError);
+        }
+      });
+    return () => {
+      active = false;
+    };
+  }, [activeTab, chatUnreadRefreshKey, userId]);
 
   const decideProfileVisitor = useCallback(
     async (visitorId: string, action: "like" | "pass") => {
@@ -752,8 +993,20 @@ function DiscoveryApp({
       setLikesMessage("");
       try {
         const result = await respondToProfileVisitor(visitorId, action);
-        setProfileVisitors((current) =>
-          current.filter((visitor) => visitor.id !== visitorId),
+        visitorsLoadAttempt.current += 1;
+        setIsLoadingVisitors(false);
+        const updatedVisitors = profileVisitorsRef.current.filter(
+          (visitor) => visitor.id !== visitorId,
+        );
+        profileVisitorsRef.current = updatedVisitors;
+        setProfileVisitors(updatedVisitors);
+        void saveProfileVisitorsCache(userId, updatedVisitors).catch(
+          (cacheError: unknown) => {
+            console.error(
+              "Could not update the profile visitors cache.",
+              cacheError,
+            );
+          },
         );
         if (action === "like") {
           setLikesMessage(
@@ -775,7 +1028,7 @@ function DiscoveryApp({
         setIsRespondingToLike(false);
       }
     },
-    [isRespondingToLike, loadLikes],
+    [isRespondingToLike, loadLikes, userId],
   );
 
   const loadExplore = useCallback(
@@ -831,10 +1084,12 @@ function DiscoveryApp({
     const subscription = addMemberNotificationResponseListener((linkUrl) => {
       handleNotificationLink(linkUrl);
     });
-    const deepLinkSubscription =
-      addMemberNotificationDeepLinkListener(handleNotificationLink);
+    const deepLinkSubscription = addMemberNotificationDeepLinkListener(
+      handleNotificationLink,
+    );
     const receivedSubscription = addMemberNotificationReceivedListener(() => {
       setUnreadCountRefreshKey((current) => current + 1);
+      setChatUnreadRefreshKey((current) => current + 1);
     });
     return () => {
       subscription.remove();
@@ -884,12 +1139,7 @@ function DiscoveryApp({
       active = false;
       clearInterval(interval);
     };
-  }, [
-    activeTab,
-    isNotificationInboxVisible,
-    isVideoCallActive,
-    userId,
-  ]);
+  }, [activeTab, isNotificationInboxVisible, isVideoCallActive, userId]);
 
   useEffect(() => {
     let active = true;
@@ -941,6 +1191,32 @@ function DiscoveryApp({
           ? markError.message
           : "Could not mark this notification as read.",
       );
+    }
+  }
+
+  async function markAllNotificationsRead(): Promise<void> {
+    if (isMarkingAllNotificationsRead || unreadNotificationCount === 0) return;
+    setIsMarkingAllNotificationsRead(true);
+    setNotificationError("");
+    try {
+      await markAllMemberNotificationsRead();
+      const readAt = new Date().toISOString();
+      setMemberNotifications((current) =>
+        current.map((notification) =>
+          notification.read_at === null
+            ? { ...notification, read_at: readAt }
+            : notification,
+        ),
+      );
+      setUnreadNotificationCount(0);
+    } catch (markError) {
+      setNotificationError(
+        markError instanceof Error
+          ? markError.message
+          : "Could not mark all notifications as read.",
+      );
+    } finally {
+      setIsMarkingAllNotificationsRead(false);
     }
   }
 
@@ -997,15 +1273,20 @@ function DiscoveryApp({
 
   useEffect(() => {
     let active = true;
-    void registerPushNotifications(userId, false).catch((setupError: unknown) => {
-      if (!active) return;
-      setPushSetupMessage(
-        setupError instanceof Error
-          ? setupError.message
-          : "Push notifications could not be set up on this device.",
-      );
-      console.error("Could not refresh this device's push registration.", setupError);
-    });
+    void registerPushNotifications(userId, false).catch(
+      (setupError: unknown) => {
+        if (!active) return;
+        setPushSetupMessage(
+          setupError instanceof Error
+            ? setupError.message
+            : "Push notifications could not be set up on this device.",
+        );
+        console.error(
+          "Could not refresh this device's push registration.",
+          setupError,
+        );
+      },
+    );
     return () => {
       active = false;
     };
@@ -1016,13 +1297,26 @@ function DiscoveryApp({
       if (state === "active") {
         setClock(Date.now());
         setUnreadCountRefreshKey((current) => current + 1);
+        setChatUnreadRefreshKey((current) => current + 1);
         void loadDailyFive(true);
-        if (activeTab === "likes") void loadLikes();
+        if (activeTab === "likes") {
+          void loadLikes();
+          void loadProfileVisitors();
+        } else if (activeTab === "discover") {
+          void loadLikes();
+        }
         if (discoveryMode === "explore") void loadExplore();
       }
     });
     return () => subscription.remove();
-  }, [activeTab, discoveryMode, loadDailyFive, loadExplore, loadLikes]);
+  }, [
+    activeTab,
+    discoveryMode,
+    loadDailyFive,
+    loadExplore,
+    loadLikes,
+    loadProfileVisitors,
+  ]);
 
   useEffect(() => {
     if (activeTab === "discover" && hasLoadedDailyFive.current) {
@@ -1031,8 +1325,32 @@ function DiscoveryApp({
     if (activeTab === "discover" && discoveryMode === "explore") {
       void loadExplore();
     }
-    if (activeTab === "likes") void loadLikes();
-  }, [activeTab, discoveryMode, loadDailyFive, loadExplore, loadLikes]);
+    if (activeTab === "likes") {
+      void loadLikes();
+      void loadProfileVisitors();
+    }
+  }, [
+    activeTab,
+    discoveryMode,
+    loadDailyFive,
+    loadExplore,
+    loadLikes,
+    loadProfileVisitors,
+  ]);
+
+  useEffect(() => {
+    if (activeTab === "discover" && !likesFeed) void loadLikes();
+  }, [activeTab, likesFeed, loadLikes]);
+
+  useEffect(() => {
+    if (activeTab === "likes" && likesSection === "matches") {
+      void loadMatchActivity();
+    }
+  }, [activeTab, likesSection, loadMatchActivity]);
+
+  useEffect(() => {
+    if (activeTab === "profile") setProfilePanelToOpen(null);
+  }, [activeTab]);
 
   useEffect(() => {
     if (localProfile) {
@@ -1082,6 +1400,11 @@ function DiscoveryApp({
     const totalMinutes = Math.ceil(remaining / 60_000);
     return `Resets in ${totalMinutes}m`;
   }, [clock, exploreFeed]);
+
+  const navigateToTab = (tab: Tab) => {
+    setIsNotificationInboxVisible(false);
+    setActiveTab(tab);
+  };
 
   useEffect(() => {
     if (
@@ -1502,7 +1825,6 @@ function DiscoveryApp({
         ? [selectedLikeProfile.person.image]
         : []
     : [];
-  const profileDetailsPhotoWidth = Math.min(width - 40, 500);
 
   useEffect(() => {
     const targetUserId = selectedLikeProfile?.person.id;
@@ -1515,31 +1837,6 @@ function DiscoveryApp({
       );
     });
   }, [selectedLikeProfile?.person.id, userId]);
-
-  useEffect(() => {
-    profileDetailsPhotoIndexRef.current = 0;
-    setProfileDetailsPhotoIndex(0);
-    profileDetailsPhotoScroll.current?.scrollTo({ x: 0, animated: false });
-  }, [selectedLikeProfile?.person.id]);
-
-  useEffect(() => {
-    if (!selectedLikeProfile || profileDetailsPhotos.length < 2) return;
-    const timer = setInterval(() => {
-      const nextIndex =
-        (profileDetailsPhotoIndexRef.current + 1) % profileDetailsPhotos.length;
-      profileDetailsPhotoIndexRef.current = nextIndex;
-      setProfileDetailsPhotoIndex(nextIndex);
-      profileDetailsPhotoScroll.current?.scrollTo({
-        x: nextIndex * profileDetailsPhotoWidth,
-        animated: true,
-      });
-    }, 4_000);
-    return () => clearInterval(timer);
-  }, [
-    profileDetailsPhotoWidth,
-    profileDetailsPhotos.length,
-    selectedLikeProfile?.person.id,
-  ]);
 
   if (editingStep && localProfile) {
     return (
@@ -1557,21 +1854,23 @@ function DiscoveryApp({
     <SafeAreaView
       style={[
         styles.safeArea,
-        activeTab === "profile" && {
+        (activeTab === "profile" || activeTab === "discover") && {
           backgroundColor: profileColors.background,
         },
       ]}
     >
-      <StatusBar style={isDark ? "light" : "dark"} />
+      <StatusBar style={isVideoCallActive || isDark ? "light" : "dark"} />
       <View
         style={[
           styles.app,
-          activeTab === "profile" && {
+          isVideoCallActive && { paddingHorizontal: 0 },
+          (activeTab === "profile" || activeTab === "discover") && {
             backgroundColor: profileColors.background,
           },
         ]}
       >
         {activeTab !== "profile" &&
+        !isChemistryOpen &&
         !isVideoCallActive &&
         !isNotificationInboxVisible ? (
           <View style={styles.header}>
@@ -1595,14 +1894,33 @@ function DiscoveryApp({
                 }}
                 style={({ pressed }) => [
                   styles.notificationButton,
+                  activeTab === "discover" && {
+                    backgroundColor: profileColors.surface,
+                    borderColor: profileColors.border,
+                  },
                   pressed && styles.headerButtonPressed,
                 ]}
               >
-                <Bell color={brandColors.magenta} size={17} strokeWidth={1.9} />
+                <Bell
+                  color={
+                    activeTab === "discover"
+                      ? profileColors.primary
+                      : activeTab === "video"
+                        ? ACCENT
+                        : ACCENT
+                  }
+                  size={17}
+                  strokeWidth={1.9}
+                />
                 {unreadNotificationCount > 0 ? (
                   <View
                     accessibilityLabel={`${unreadNotificationCount} unread notifications`}
-                    style={styles.notificationUnreadBadge}
+                    style={[
+                      styles.notificationUnreadBadge,
+                      (activeTab === "discover" || activeTab === "video") && {
+                        backgroundColor: ACCENT,
+                      },
+                    ]}
                   >
                     <Text style={styles.notificationUnreadBadgeText}>
                       {unreadNotificationCount > 99
@@ -1612,42 +1930,146 @@ function DiscoveryApp({
                   </View>
                 ) : null}
               </Pressable>
-              <View style={styles.locationButton}>
-                <Text style={styles.locationPin}>⌖</Text>
-                <Text style={styles.locationText}>
+              <View
+                style={[
+                  styles.locationButton,
+                  activeTab === "discover" && {
+                    backgroundColor: profileColors.surface,
+                    borderColor: profileColors.border,
+                  },
+                ]}
+              >
+                <Text
+                  style={[
+                    styles.locationPin,
+                    (activeTab === "discover" || activeTab === "video") && {
+                      color:
+                        activeTab === "discover"
+                          ? profileColors.primary
+                          : ACCENT,
+                    },
+                  ]}
+                >
+                  ⌖
+                </Text>
+                <Text
+                  style={[
+                    styles.locationText,
+                    (activeTab === "discover" || activeTab === "video") && {
+                      color:
+                        activeTab === "discover"
+                          ? profileColors.primary
+                          : ACCENT,
+                    },
+                  ]}
+                >
                   {localProfile?.profile.city || "Your city"}
                 </Text>
-                <Text style={styles.locationChevron}>⌄</Text>
+                <Text
+                  style={[
+                    styles.locationChevron,
+                    (activeTab === "discover" || activeTab === "video") && {
+                      color:
+                        activeTab === "discover"
+                          ? profileColors.primary
+                          : ACCENT,
+                    },
+                  ]}
+                >
+                  ⌄
+                </Text>
               </View>
             </View>
           </View>
         ) : null}
 
         <View style={styles.content}>
-          {presenceError || onlineStatusError ? (
-            <Text accessibilityRole="alert" style={styles.errorMessage}>
-              Online status is unavailable: {presenceError || onlineStatusError}
-            </Text>
-          ) : null}
           {activeTab === "discover" && (
             <View style={styles.discoverScreen}>
-              <View style={styles.discoveryModes}>
+              <View style={styles.discoveryIntro}>
+                <View style={styles.discoveryIntroCopy}>
+                  <Text
+                    style={[
+                      styles.discoveryEyebrow,
+                      { color: profileColors.textSecondary },
+                    ]}
+                  >
+                    DISCOVER
+                  </Text>
+                  <Text
+                    style={[
+                      styles.discoveryHeading,
+                      { color: profileColors.primary },
+                    ]}
+                  >
+                    Meet with intention
+                  </Text>
+                </View>
+
+                {discoveryMode === "explore" && (
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel="Open Explore filters"
+                    onPress={() => {
+                      setDiscoveryMode("explore");
+                      setIsExploreFiltersExpanded((expanded) => !expanded);
+                    }}
+                    style={({ pressed }) => [
+                      styles.discoveryFilterButton,
+                      {
+                        backgroundColor: profileColors.surface,
+                        borderColor: profileColors.border,
+                      },
+                      pressed && styles.headerButtonPressed,
+                    ]}
+                  >
+                    <SlidersHorizontal
+                      color={profileColors.primary}
+                      size={16}
+                      strokeWidth={1.8}
+                    />
+                    <Text
+                      style={[
+                        styles.discoveryFilterText,
+                        { color: profileColors.primary },
+                      ]}
+                    >
+                      Filters
+                    </Text>
+                  </Pressable>
+                )}
+              </View>
+              <View
+                style={[
+                  styles.discoveryModes,
+                  { backgroundColor: profileColors.surfaceSecondary },
+                ]}
+              >
                 {(["daily", "explore"] as const).map((mode) => (
                   <Pressable
                     key={mode}
                     accessibilityRole="button"
                     accessibilityState={{ selected: discoveryMode === mode }}
-                    onPress={() => setDiscoveryMode(mode)}
+                    onPress={() => {
+                      setDiscoveryMode(mode);
+                      if (mode === "daily") setIsExploreFiltersExpanded(false);
+                    }}
                     style={[
                       styles.discoveryModeButton,
-                      discoveryMode === mode && styles.discoveryModeActive,
+                      discoveryMode === mode && {
+                        backgroundColor: profileColors.primary,
+                      },
                     ]}
                   >
                     <Text
                       style={[
                         styles.discoveryModeText,
-                        discoveryMode === mode &&
-                          styles.discoveryModeTextActive,
+                        {
+                          color:
+                            discoveryMode === mode
+                              ? profileColors.textInverse
+                              : profileColors.textSecondary,
+                        },
                       ]}
                     >
                       {mode === "daily" ? "Daily 5" : "Explore"}
@@ -1660,15 +2082,30 @@ function DiscoveryApp({
                   <Text style={styles.eyebrow}>
                     {discoveryMode === "daily" ? "YOUR DAILY 5" : "EXPLORE"}
                   </Text>
-                  <Text style={styles.discoveryHeading}>
+                  <Text
+                    style={[
+                      styles.discoverySectionTitle,
+                      { color: profileColors.textSecondary },
+                    ]}
+                  >
                     {discoveryMode === "daily"
                       ? "A little spark?"
                       : "Find a connection"}
                   </Text>
                 </View>
                 <View style={styles.dailyMeta}>
-                  <View style={styles.dailyCount}>
-                    <Text style={styles.dailyCountText}>
+                  <View
+                    style={[
+                      styles.dailyCount,
+                      { backgroundColor: profileColors.surfaceSecondary },
+                    ]}
+                  >
+                    <Text
+                      style={[
+                        styles.dailyCountText,
+                        { color: profileColors.primary },
+                      ]}
+                    >
                       {discoveryMode === "daily"
                         ? dailyFeed
                           ? `${dailyFeed.exploredCount} of ${dailyFeed.selectedCount} explored`
@@ -1679,9 +2116,21 @@ function DiscoveryApp({
                     </Text>
                   </View>
                   {discoveryMode === "daily" && dailyFeed ? (
-                    <Text style={styles.countdownText}>{nextRefreshText}</Text>
+                    <Text
+                      style={[
+                        styles.countdownText,
+                        { color: profileColors.textSecondary },
+                      ]}
+                    >
+                      {nextRefreshText}
+                    </Text>
                   ) : discoveryMode === "explore" && exploreFeed ? (
-                    <Text style={styles.countdownText}>
+                    <Text
+                      style={[
+                        styles.countdownText,
+                        { color: profileColors.textSecondary },
+                      ]}
+                    >
                       {nextExploreResetText}
                     </Text>
                   ) : null}
@@ -1689,7 +2138,7 @@ function DiscoveryApp({
               </View>
               {isDailyFeedExpired ? (
                 <View style={styles.dailyRefreshNotice}>
-                  {dailyFiveError ? (
+                  {dailyFiveError && (
                     <>
                       <Text
                         accessibilityRole="alert"
@@ -1707,20 +2156,10 @@ function DiscoveryApp({
                         </Text>
                       </Pressable>
                     </>
-                  ) : (
-                    <>
-                      <ActivityIndicator
-                        size="small"
-                        color={brandColors.magenta}
-                      />
-                      <Text style={styles.dailyRefreshText}>
-                        Refreshing your Daily 5…
-                      </Text>
-                    </>
                   )}
                 </View>
               ) : null}
-              {discoveryMode === "explore" ? (
+              {discoveryMode === "explore" && isExploreFiltersExpanded ? (
                 <View style={styles.exploreFilters}>
                   <Text style={styles.filterLabel}>DISTANCE</Text>
                   <ScrollView
@@ -1818,12 +2257,19 @@ function DiscoveryApp({
                   : isLoadingExplore
               ) ? (
                 <View style={styles.discoveryMessage}>
-                  <ActivityIndicator color={ACCENT} />
-                  <Text style={styles.emptyMessage}>
-                    {discoveryMode === "daily"
-                      ? "Preparing your Daily 5…"
-                      : "Finding people nearby…"}
-                  </Text>
+                  <VeyraLoader
+                    size={30}
+                    label={
+                      discoveryMode === "daily"
+                        ? dailyFeed
+                          ? "Refreshing your Daily 5…"
+                          : "Preparing your Daily 5…"
+                        : "Finding people nearby…"
+                    }
+                    imageWidth={48}
+                    imageHeight={48}
+                    imageMarginBottom={2}
+                  />
                 </View>
               ) : !currentPerson &&
                 (discoveryMode === "daily" ? dailyFiveError : exploreError) ? (
@@ -1838,9 +2284,13 @@ function DiscoveryApp({
                         ? void loadDailyFive()
                         : void loadExplore()
                     }
-                    style={styles.emptyButton}
+                    style={[styles.emptyButton, { backgroundColor: ACCENT }]}
                   >
-                    <Text style={styles.emptyButtonText}>Try again</Text>
+                    <Text
+                      style={[styles.emptyButtonText, { color: "#331B1D" }]}
+                    >
+                      Try again
+                    </Text>
                   </Pressable>
                 </View>
               ) : currentPerson ? (
@@ -1925,7 +2375,7 @@ function DiscoveryApp({
                             style={styles.safetyMenuButton}
                           >
                             <EllipsisVertical
-                              color={brandColors.magenta}
+                              color={ACCENT}
                               size={18}
                               strokeWidth={2.5}
                             />
@@ -1991,16 +2441,51 @@ function DiscoveryApp({
                               setSelectedLikeProfile({
                                 person: currentPerson,
                                 canRespond: false,
+                                source: discoveryMode,
                               })
                             }
                             style={styles.viewDetailsButton}
                           >
-                            <Eye color={brandColors.magenta} size={17} />
+                            <Eye color={ACCENT} size={17} />
                           </Pressable>
                         </View>
                       </View>
                     </ImageBackground>
-                    {currentPersonAlreadyLiked ? (
+                    {currentPersonLikedYou &&
+                    likedYouBadgePersonId === currentPerson.id ? (
+                      <Animated.View
+                        pointerEvents="none"
+                        style={[
+                          styles.likedBackBadge,
+                          {
+                            opacity: likedYouBadgeProgress,
+                            transform: [
+                              {
+                                translateY: likedYouBadgeProgress.interpolate({
+                                  inputRange: [0, 1],
+                                  outputRange: [-8, 0],
+                                }),
+                              },
+                              {
+                                scale: likedYouBadgeProgress.interpolate({
+                                  inputRange: [0, 1],
+                                  outputRange: [0.92, 1],
+                                }),
+                              },
+                            ],
+                          },
+                        ]}
+                      >
+                        <HeartHandshake
+                          color={ACCENT}
+                          size={16}
+                          strokeWidth={2.2}
+                        />
+                        <Text style={styles.likedBackBadgeText}>
+                          {getLikesYouText(currentPerson.gender)}
+                        </Text>
+                      </Animated.View>
+                    ) : currentPersonAlreadyLiked ? (
                       <View pointerEvents="none" style={styles.likedBackBadge}>
                         <Text style={styles.likedBackBadgeIcon}>♥</Text>
                         <Text style={styles.likedBackBadgeText}>
@@ -2037,13 +2522,52 @@ function DiscoveryApp({
                       >
                         <View style={styles.superLikeBurstIcon}>
                           <Sparkles
-                            color={brandColors.magenta}
+                            color={ACCENT}
                             size={42}
                             strokeWidth={2.2}
                           />
                         </View>
                         <Text style={styles.superLikeBurstLabel}>
                           SUPER LIKE
+                        </Text>
+                      </Animated.View>
+                    ) : null}
+                    {likedYouTargetId === currentPerson.id ? (
+                      <Animated.View
+                        pointerEvents="none"
+                        style={[
+                          styles.superLikeBurst,
+                          {
+                            opacity: likedYouProgress.interpolate({
+                              inputRange: [0, 0.1, 0.76, 1],
+                              outputRange: [0, 1, 1, 0],
+                            }),
+                            transform: [
+                              {
+                                scale: likedYouProgress.interpolate({
+                                  inputRange: [0, 0.18, 0.72, 1],
+                                  outputRange: [0.45, 1.08, 1.02, 1.42],
+                                }),
+                              },
+                              {
+                                rotate: likedYouProgress.interpolate({
+                                  inputRange: [0, 0.2, 1],
+                                  outputRange: ["-8deg", "0deg", "7deg"],
+                                }),
+                              },
+                            ],
+                          },
+                        ]}
+                      >
+                        <View style={styles.superLikeBurstIcon}>
+                          <HeartHandshake
+                            color={ACCENT}
+                            size={42}
+                            strokeWidth={2.2}
+                          />
+                        </View>
+                        <Text style={styles.superLikeBurstLabel}>
+                          {getLikesYouText(currentPerson.gender)}
                         </Text>
                       </Animated.View>
                     ) : null}
@@ -2136,7 +2660,14 @@ function DiscoveryApp({
                             }
                             style={styles.outOfRadiusButton}
                           >
-                            <Text style={styles.emptyButtonText}>Previous</Text>
+                            <Text
+                              style={[
+                                styles.emptyButtonText,
+                                { color: "#331B1D" },
+                              ]}
+                            >
+                              Previous
+                            </Text>
                           </Pressable>
                         ) : null}
                         <Pressable
@@ -2154,7 +2685,12 @@ function DiscoveryApp({
                           }}
                           style={styles.outOfRadiusButton}
                         >
-                          <Text style={styles.emptyButtonText}>
+                          <Text
+                            style={[
+                              styles.emptyButtonText,
+                              { color: "#331B1D" },
+                            ]}
+                          >
                             {exploreFeed &&
                             exploreProfileIndex <
                               exploreFeed.profiles.length - 1
@@ -2178,9 +2714,16 @@ function DiscoveryApp({
                           onPress={handleSuperLike}
                         />
                         <ActionButton
-                          accessibilityLabel="Like this profile"
+                          accessibilityLabel={
+                            currentPersonLikedYou
+                              ? "Like back this profile"
+                              : "Like this profile"
+                          }
                           label="♥"
                           kind="like"
+                          icon={
+                            currentPersonLikedYou ? HeartHandshake : undefined
+                          }
                           onPress={() => void finishSwipe("like")}
                         />
                       </View>
@@ -2189,7 +2732,7 @@ function DiscoveryApp({
                 </>
               ) : discoveryMode === "daily" ? (
                 <View style={styles.discoveryMessage}>
-                  <Text style={styles.emptySymbol}>✦</Text>
+                  <Text style={[styles.emptySymbol, { color: ACCENT }]}>✦</Text>
                   <Text style={styles.emptyTitle}>
                     {dailyFeed?.selectedCount === 0
                       ? "A little quiet today."
@@ -2210,9 +2753,11 @@ function DiscoveryApp({
                     <Pressable
                       accessibilityRole="button"
                       onPress={() => setDiscoveryMode("explore")}
-                      style={styles.emptyButton}
+                      style={[styles.emptyButton, { backgroundColor: ACCENT }]}
                     >
-                      <Text style={styles.emptyButtonText}>
+                      <Text
+                        style={[styles.emptyButtonText, { color: "#331B1D" }]}
+                      >
                         Explore people →
                       </Text>
                     </Pressable>
@@ -2220,7 +2765,7 @@ function DiscoveryApp({
                 </View>
               ) : (
                 <View style={styles.discoveryMessage}>
-                  <Text style={styles.emptySymbol}>⌖</Text>
+                  <Text style={[styles.emptySymbol, { color: ACCENT }]}>⌖</Text>
                   <Text style={styles.emptyTitle}>
                     {exploreFeed?.remainingDecisions === 0
                       ? "That’s your Explore limit for today."
@@ -2243,9 +2788,11 @@ function DiscoveryApp({
                         setExploreRadiusKm(200);
                         void loadExplore(200, exploreIntention);
                       }}
-                      style={styles.emptyButton}
+                      style={[styles.emptyButton, { backgroundColor: ACCENT }]}
                     >
-                      <Text style={styles.emptyButtonText}>
+                      <Text
+                        style={[styles.emptyButtonText, { color: "#331B1D" }]}
+                      >
                         Search up to 200 km
                       </Text>
                     </Pressable>
@@ -2255,17 +2802,25 @@ function DiscoveryApp({
                     <Pressable
                       accessibilityRole="button"
                       onPress={() => setEditingStep("profile")}
-                      style={styles.emptyButton}
+                      style={[styles.emptyButton, { backgroundColor: ACCENT }]}
                     >
-                      <Text style={styles.emptyButtonText}>Set my city</Text>
+                      <Text
+                        style={[styles.emptyButtonText, { color: "#331B1D" }]}
+                      >
+                        Set my city
+                      </Text>
                     </Pressable>
                   ) : null}
                   <Pressable
                     accessibilityRole="button"
                     onPress={() => setDiscoveryMode("daily")}
-                    style={styles.emptyButton}
+                    style={[styles.emptyButton, { backgroundColor: ACCENT }]}
                   >
-                    <Text style={styles.emptyButtonText}>Back to Daily 5</Text>
+                    <Text
+                      style={[styles.emptyButtonText, { color: "#331B1D" }]}
+                    >
+                      Back to Daily 5
+                    </Text>
                   </Pressable>
                 </View>
               )}
@@ -2388,121 +2943,34 @@ function DiscoveryApp({
                 <View style={styles.profileDetailsSheet}>
                   <View style={styles.profileDetailsTopBar}>
                     <View style={styles.profileDetailsHandle} />
+                    <Text style={styles.profileDetailsTopTitle}>
+                      {selectedLikeProfile.source === "daily"
+                        ? "DAILY 5 PROFILE"
+                        : selectedLikeProfile.source === "explore"
+                          ? "EXPLORE PROFILE"
+                          : "PROFILE DETAILS"}
+                    </Text>
                     <Pressable
                       accessibilityRole="button"
                       accessibilityLabel="Close profile details"
                       onPress={() => setSelectedLikeProfile(null)}
                       style={styles.profileDetailsClose}
                     >
-                      <Text style={styles.profileDetailsCloseText}>×</Text>
+                      <X color="#FFF8F4" size={18} />
                     </Pressable>
                   </View>
                   <ScrollView
                     contentContainerStyle={styles.likeProfileContent}
                     showsVerticalScrollIndicator={false}
                   >
-                    <View style={styles.profileDetailsHeroFrame}>
-                      {profileDetailsPhotos.length ? (
-                        <ScrollView
-                          ref={profileDetailsPhotoScroll}
-                          horizontal
-                          pagingEnabled
-                          showsHorizontalScrollIndicator={false}
-                          onMomentumScrollEnd={(event) => {
-                            const nextIndex = Math.max(
-                              0,
-                              Math.min(
-                                profileDetailsPhotos.length - 1,
-                                Math.round(
-                                  event.nativeEvent.contentOffset.x /
-                                    profileDetailsPhotoWidth,
-                                ),
-                              ),
-                            );
-                            profileDetailsPhotoIndexRef.current = nextIndex;
-                            setProfileDetailsPhotoIndex(nextIndex);
-                          }}
-                          style={styles.profileDetailsPhotoScroller}
-                        >
-                          {profileDetailsPhotos.map((photo, index) => (
-                            <View
-                              key={photo}
-                              style={[
-                                styles.profileDetailsPhotoPage,
-                                { width: profileDetailsPhotoWidth },
-                              ]}
-                            >
-                              <Image
-                                source={{ uri: photo }}
-                                resizeMode="contain"
-                                style={styles.profileDetailsHeroPhoto}
-                              />
-                              {index === 0 ? (
-                                <View style={styles.profileDetailsHeroShade}>
-                                  <View style={styles.profileDetailsHeroCopy}>
-                                    {selectedLikeProfile.canRespond ? (
-                                      <Text
-                                        style={styles.profileDetailsEyebrow}
-                                      >
-                                        THEY LIKE YOU
-                                      </Text>
-                                    ) : null}
-                                    <View style={styles.profileDetailsNameRow}>
-                                      <Text style={styles.profileDetailsName}>
-                                        {selectedLikeProfile.person.name}
-                                        {selectedLikeProfile.person.age === null
-                                          ? ""
-                                          : `, ${selectedLikeProfile.person.age}`}
-                                      </Text>
-                                      {onlineUserIds.has(
-                                        selectedLikeProfile.person.id,
-                                      ) ? (
-                                        <View
-                                          accessibilityLabel={`${selectedLikeProfile.person.name} is online`}
-                                          style={styles.onlinePresence}
-                                        >
-                                          <View
-                                            style={styles.onlinePresenceDot}
-                                          />
-                                          <Text
-                                            style={styles.onlinePresenceText}
-                                          >
-                                            Online
-                                          </Text>
-                                        </View>
-                                      ) : null}
-                                      {selectedLikeProfile.person
-                                        .identityVerified ? (
-                                        <IdentityVerifiedBadge
-                                          colors={profileColors}
-                                          compact
-                                        />
-                                      ) : null}
-                                    </View>
-                                    {selectedLikeProfile.person.city ||
-                                    selectedLikeProfile.person.distanceKm !==
-                                      null ? (
-                                      <Text
-                                        style={styles.profileDetailsLocation}
-                                      >
-                                        {[
-                                          selectedLikeProfile.person.city,
-                                          selectedLikeProfile.person
-                                            .distanceKm === null
-                                            ? null
-                                            : `${selectedLikeProfile.person.distanceKm} km away`,
-                                        ]
-                                          .filter(Boolean)
-                                          .join(" · ")}
-                                      </Text>
-                                    ) : null}
-                                  </View>
-                                </View>
-                              ) : null}
-                            </View>
-                          ))}
-                        </ScrollView>
-                      ) : (
+                    <ProfilePhotoGallery
+                      photos={profileDetailsPhotos}
+                      height={370}
+                      accentColor={ACCENT}
+                      surfaceColor="#33272C"
+                      borderColor="#59434A"
+                      textColor="#FFF8F4"
+                      placeholder={
                         <View style={styles.profileDetailsPhotoPlaceholder}>
                           <Text style={styles.profileDetailsPlaceholderMark}>
                             V
@@ -2510,45 +2978,53 @@ function DiscoveryApp({
                           <Text style={styles.profileDetailsPlaceholderLabel}>
                             PHOTO NOT ADDED
                           </Text>
-                          <View style={styles.profileDetailsPlaceholderCopy}>
-                            <Text style={styles.profileDetailsName}>
-                              {selectedLikeProfile.person.name}
-                              {selectedLikeProfile.person.age === null
-                                ? ""
-                                : `, ${selectedLikeProfile.person.age}`}
+                        </View>
+                      }
+                    />
+
+                    <View style={styles.profileDetailsHeroCopy}>
+                      {selectedLikeProfile.canRespond ? (
+                        <Text style={styles.profileDetailsEyebrow}>
+                          {getLikesYouText(selectedLikeProfile.person.gender)}
+                        </Text>
+                      ) : null}
+                      <View style={styles.profileDetailsNameRow}>
+                        <Text style={styles.profileDetailsName}>
+                          {selectedLikeProfile.person.name}
+                          {selectedLikeProfile.person.age === null
+                            ? ""
+                            : `, ${selectedLikeProfile.person.age}`}
+                        </Text>
+                        {onlineUserIds.has(selectedLikeProfile.person.id) ? (
+                          <View
+                            accessibilityLabel={`${selectedLikeProfile.person.name} is online`}
+                            style={styles.onlinePresence}
+                          >
+                            <View style={styles.onlinePresenceDot} />
+                            <Text style={styles.onlinePresenceText}>
+                              Online
                             </Text>
-                            {onlineUserIds.has(
-                              selectedLikeProfile.person.id,
-                            ) ? (
-                              <View
-                                accessibilityLabel={`${selectedLikeProfile.person.name} is online`}
-                                style={styles.onlinePresence}
-                              >
-                                <View style={styles.onlinePresenceDot} />
-                                <Text style={styles.onlinePresenceText}>
-                                  Online
-                                </Text>
-                              </View>
-                            ) : null}
                           </View>
-                        </View>
-                      )}
-                      {profileDetailsPhotos.length > 1 ? (
-                        <View
-                          pointerEvents="none"
-                          style={styles.profileDetailsPhotoIndicators}
-                        >
-                          {profileDetailsPhotos.map((photo, index) => (
-                            <View
-                              key={photo}
-                              style={[
-                                styles.profileDetailsPhotoIndicator,
-                                index === profileDetailsPhotoIndex &&
-                                  styles.profileDetailsPhotoIndicatorActive,
-                              ]}
-                            />
-                          ))}
-                        </View>
+                        ) : null}
+                        {selectedLikeProfile.person.identityVerified ? (
+                          <IdentityVerifiedBadge
+                            colors={profileColors}
+                            compact
+                          />
+                        ) : null}
+                      </View>
+                      {selectedLikeProfile.person.city ||
+                      selectedLikeProfile.person.distanceKm !== null ? (
+                        <Text style={styles.profileDetailsLocation}>
+                          {[
+                            selectedLikeProfile.person.city,
+                            selectedLikeProfile.person.distanceKm === null
+                              ? null
+                              : `${selectedLikeProfile.person.distanceKm} km away`,
+                          ]
+                            .filter(Boolean)
+                            .join(" · ")}
+                        </Text>
                       ) : null}
                     </View>
 
@@ -2772,10 +3248,11 @@ function DiscoveryApp({
 
           {activeTab === "likes" && (
             <View style={styles.secondaryScreen}>
-              <Text style={styles.eyebrow}>INTEREST, BOTH WAYS</Text>
-              <Text style={styles.heading}>Likes</Text>
+              <Text style={[styles.heading, { color: profileColors.primary }]}>
+                Your connections
+              </Text>
               <Text style={styles.likesSubtitle}>
-                Browse likes, matches, and profile visitors.
+                Interest, connections and people discovering you.
               </Text>
               <View style={styles.likesSections}>
                 {(
@@ -2791,9 +3268,6 @@ function DiscoveryApp({
                     accessibilityState={{ selected: likesSection === section }}
                     onPress={() => {
                       setLikesSection(section);
-                      if (section === "visitors") {
-                        void loadProfileVisitors();
-                      }
                     }}
                     style={[
                       styles.likesSectionButton,
@@ -2813,82 +3287,52 @@ function DiscoveryApp({
                   </Pressable>
                 ))}
               </View>
-              {likesSection === "likes" ? (
-                <View style={styles.likesDirectionTabs}>
-                  {(
-                    [
-                      [
-                        "received",
-                        `Received${incomingLikes.length ? ` ${incomingLikes.length}` : ""}`,
-                      ],
-                      [
-                        "sent",
-                        `Sent${sentLikes.length ? ` ${sentLikes.length}` : ""}`,
-                      ],
-                    ] as const
-                  ).map(([direction, label]) => (
-                    <Pressable
-                      key={direction}
-                      accessibilityRole="tab"
-                      accessibilityState={{
-                        selected: likeDirection === direction,
-                      }}
-                      onPress={() => {
-                        setLikeDirection(direction);
-                        if (direction === "sent") void loadLikes();
-                      }}
-                      style={[
-                        styles.likesDirectionButton,
-                        likeDirection === direction &&
-                          styles.likesDirectionButtonActive,
-                      ]}
-                    >
-                      <Text
-                        style={[
-                          styles.likesDirectionText,
-                          likeDirection === direction &&
-                            styles.likesDirectionTextActive,
-                        ]}
-                      >
-                        {label}
-                      </Text>
-                    </Pressable>
-                  ))}
-                </View>
-              ) : null}
               {likesSection === "visitors" ? (
-                <View style={styles.visitorFilterTabs}>
-                  {(
-                    [
-                      ["all", "All"],
-                      ["new", "New"],
-                      ["recent", "Recent"],
-                    ] as const
-                  ).map(([filter, label]) => (
-                    <Pressable
-                      key={filter}
-                      accessibilityRole="tab"
-                      accessibilityState={{
-                        selected: visitorFilter === filter,
-                      }}
-                      onPress={() => setVisitorFilter(filter)}
-                      style={[
-                        styles.visitorFilterButton,
-                        visitorFilter === filter &&
-                          styles.visitorFilterButtonActive,
-                      ]}
-                    >
-                      <Text
+                <View style={styles.visitorControls}>
+                  <View style={styles.visitorFilterTabs}>
+                    {(
+                      [
+                        ["all", "All"],
+                        ["new", "New"],
+                        ["recent", "Recent"],
+                      ] as const
+                    ).map(([filter, label]) => (
+                      <Pressable
+                        key={filter}
+                        accessibilityRole="tab"
+                        accessibilityState={{
+                          selected: visitorFilter === filter,
+                        }}
+                        onPress={() => setVisitorFilter(filter)}
                         style={[
-                          styles.visitorFilterText,
+                          styles.visitorFilterButton,
                           visitorFilter === filter &&
-                            styles.visitorFilterTextActive,
+                            styles.visitorFilterButtonActive,
                         ]}
                       >
-                        {label}
-                      </Text>
-                    </Pressable>
-                  ))}
+                        <Text
+                          style={[
+                            styles.visitorFilterText,
+                            visitorFilter === filter &&
+                              styles.visitorFilterTextActive,
+                          ]}
+                        >
+                          {label}
+                        </Text>
+                      </Pressable>
+                    ))}
+                  </View>
+                  <Pressable
+                    accessibilityRole="button"
+                    onPress={() => {
+                      setProfilePanelToOpen("privacy");
+                      setActiveTab("profile");
+                    }}
+                    style={styles.visitorPrivacyButton}
+                  >
+                    <LockKeyhole size={14} color={ACCENT} />
+                    <Text style={styles.visitorPrivacyText}>Privacy</Text>
+                  </Pressable>
                 </View>
               ) : null}
               {likesMessage ? (
@@ -2904,24 +3348,63 @@ function DiscoveryApp({
                   {likesError}
                 </Text>
               ) : null}
+              {likesSection === "matches" && matchActivityError ? (
+                <Text accessibilityRole="alert" style={styles.errorMessage}>
+                  {matchActivityError}
+                </Text>
+              ) : null}
               {likesFeed || likesSection !== "likes" ? (
                 <View style={styles.likesSectionHeader}>
                   <Text style={styles.likesSectionHeading}>
                     {likesSection === "likes"
                       ? likeDirection === "received"
-                        ? "People who like you"
+                        ? "People interested in you"
                         : "People you’ve liked"
                       : likesSection === "matches"
                         ? "Your matches"
-                        : "Who viewed you"}
+                        : "Recent visitors"}
                   </Text>
-                  {likesSection === "likes" &&
-                  likeDirection === "received" &&
-                  incomingLikes.length > 0 ? (
-                    <View style={styles.likesNewCount}>
-                      <Text style={styles.likesNewCountText}>
-                        {incomingLikes.length} new
-                      </Text>
+                  {likesSection === "likes" ? (
+                    <View style={styles.likesDirectionTabs}>
+                      {(
+                        [
+                          [
+                            "received",
+                            `Received${incomingLikes.length ? ` ${incomingLikes.length}` : ""}`,
+                          ],
+                          [
+                            "sent",
+                            `Sent${sentLikes.length ? ` ${sentLikes.length}` : ""}`,
+                          ],
+                        ] as const
+                      ).map(([direction, label]) => (
+                        <Pressable
+                          key={direction}
+                          accessibilityRole="tab"
+                          accessibilityState={{
+                            selected: likeDirection === direction,
+                          }}
+                          onPress={() => {
+                            setLikeDirection(direction);
+                            if (direction === "sent") void loadLikes();
+                          }}
+                          style={[
+                            styles.likesDirectionButton,
+                            likeDirection === direction &&
+                              styles.likesDirectionButtonActive,
+                          ]}
+                        >
+                          <Text
+                            style={[
+                              styles.likesDirectionText,
+                              likeDirection === direction &&
+                                styles.likesDirectionTextActive,
+                            ]}
+                          >
+                            {label}
+                          </Text>
+                        </Pressable>
+                      ))}
                     </View>
                   ) : null}
                 </View>
@@ -2932,15 +3415,17 @@ function DiscoveryApp({
                   : isLoadingLikes && !likesFeed
               ) ? (
                 <View style={styles.likesLoading}>
-                  <ActivityIndicator color={ACCENT} />
+                  <VeyraLoader
+                    size={30}
+                    imageWidth={48}
+                    imageHeight={48}
+                    imageMarginBottom={8}
+                  />
                 </View>
               ) : (
                 <ScrollView
                   style={styles.likesScroll}
-                  contentContainerStyle={[
-                    styles.likesList,
-                    isSingleProfileResult && styles.likesListSingle,
-                  ]}
+                  contentContainerStyle={styles.likesList}
                   showsVerticalScrollIndicator={false}
                 >
                   {likesSection === "likes" &&
@@ -2948,18 +3433,33 @@ function DiscoveryApp({
                   incomingLikes.length > 0 ? (
                     <View style={styles.profileTilesGrid}>
                       {incomingLikes.map((like) => (
-                        <View
-                          key={like.id}
-                          style={[
-                            styles.profileTileColumn,
-                            isSingleProfileResult &&
-                              styles.profileTileColumnSingle,
-                          ]}
-                        >
+                        <View key={like.id} style={styles.profileTileColumn}>
                           <ProfileTile
                             person={like.person}
                             detail="Liked you"
-                            fillAvailableSpace={isSingleProfileResult}
+                            actions={[
+                              {
+                                label: `Pass on ${like.person.name}`,
+                                icon: X,
+                                onPress: () =>
+                                  void decideReceivedLike(
+                                    "pass",
+                                    like.person.id,
+                                  ),
+                                disabled: isRespondingToLike,
+                              },
+                              {
+                                label: `Like back ${like.person.name}`,
+                                icon: HeartHandshake,
+                                onPress: () =>
+                                  void decideReceivedLike(
+                                    "like",
+                                    like.person.id,
+                                  ),
+                                disabled: isRespondingToLike,
+                                primary: true,
+                              },
+                            ]}
                             onPress={() =>
                               setSelectedLikeProfile({
                                 person: like.person,
@@ -2967,38 +3467,6 @@ function DiscoveryApp({
                               })
                             }
                           />
-                          <View style={styles.profileTileActions}>
-                            <Pressable
-                              accessibilityRole="button"
-                              disabled={isRespondingToLike}
-                              onPress={() =>
-                                void decideReceivedLike("pass", like.person.id)
-                              }
-                              style={[
-                                styles.receivedLikePass,
-                                isRespondingToLike && styles.disabled,
-                              ]}
-                            >
-                              <Text style={styles.receivedLikePassText}>
-                                Pass
-                              </Text>
-                            </Pressable>
-                            <Pressable
-                              accessibilityRole="button"
-                              disabled={isRespondingToLike}
-                              onPress={() =>
-                                void decideReceivedLike("like", like.person.id)
-                              }
-                              style={[
-                                styles.receivedLikeBack,
-                                isRespondingToLike && styles.disabled,
-                              ]}
-                            >
-                              <Text style={styles.receivedLikeBackText}>
-                                Like back
-                              </Text>
-                            </Pressable>
-                          </View>
                         </View>
                       ))}
                     </View>
@@ -3007,14 +3475,7 @@ function DiscoveryApp({
                     likesFeed?.sent.length ? (
                     <View style={styles.profileTilesGrid}>
                       {likesFeed.sent.map((like) => (
-                        <View
-                          key={like.id}
-                          style={[
-                            styles.profileTileColumn,
-                            isSingleProfileResult &&
-                              styles.profileTileColumnSingle,
-                          ]}
-                        >
+                        <View key={like.id} style={styles.profileTileColumn}>
                           <ProfileTile
                             person={like.person}
                             detail={
@@ -3022,7 +3483,6 @@ function DiscoveryApp({
                                 ? "Matched"
                                 : `Liked ${formatLikeDate(like.createdAt)}`
                             }
-                            fillAvailableSpace={isSingleProfileResult}
                             onPress={() =>
                               setSelectedLikeProfile({
                                 person: like.person,
@@ -3033,29 +3493,46 @@ function DiscoveryApp({
                         </View>
                       ))}
                     </View>
-                  ) : likesSection === "matches" &&
-                    likesFeed?.matches.length ? (
+                  ) : likesSection === "matches" && orderedMatches.length ? (
                     <View style={styles.profileTilesGrid}>
-                      {likesFeed.matches.map((match) => (
-                        <View
-                          key={match.id}
-                          style={[
-                            styles.profileTileColumn,
-                            isSingleProfileResult &&
-                              styles.profileTileColumnSingle,
-                          ]}
-                        >
+                      {orderedMatches.map((match) => (
+                        <View key={match.id} style={styles.profileTileColumn}>
                           <ProfileTile
                             person={match.person}
-                            detail={
-                              isMatchInactive(match.lastActivityAt)
-                                ? "No activity in 30 days"
-                                : formatRelativeTime(
-                                    match.lastActivityAt,
-                                    "Active",
-                                  )
+                            activityBadge={
+                              matchActivity.unreadMatchIds.has(match.id)
+                                ? "Unread"
+                                : matchActivity.newMatchIds.has(match.id)
+                                  ? "New"
+                                  : undefined
                             }
-                            fillAvailableSpace={isSingleProfileResult}
+                            detail={
+                              matchActivity.unreadMatchIds.has(match.id)
+                                ? "Unread messages"
+                                : matchActivity.newMatchIds.has(match.id)
+                                  ? "New connection"
+                                  : isMatchInactive(match.lastActivityAt)
+                                    ? "No activity in 30 days"
+                                    : formatRelativeTime(
+                                        match.lastActivityAt,
+                                        "Active",
+                                      )
+                            }
+                            actions={[
+                              {
+                                label: matchActivity.unreadMatchIds.has(
+                                  match.id,
+                                )
+                                  ? `Read message from ${match.person.name}`
+                                  : `Message ${match.person.name}`,
+                                icon: MessageCircle,
+                                onPress: () => {
+                                  setPendingChatPersonId(match.person.id);
+                                  setActiveTab("chats");
+                                },
+                                primary: true,
+                              },
+                            ]}
                             onPress={() =>
                               setSelectedLikeProfile({
                                 person: match.person,
@@ -3069,85 +3546,74 @@ function DiscoveryApp({
                   ) : likesSection === "visitors" &&
                     filteredProfileVisitors.length ? (
                     <View style={styles.profileTilesGrid}>
-                      {filteredProfileVisitors.map((visitor) => (
-                        <View
-                          key={visitor.id}
-                          style={[
-                            styles.profileTileColumn,
-                            isSingleProfileResult &&
-                              styles.profileTileColumnSingle,
-                          ]}
-                        >
-                          <ProfileTile
-                            person={visitor.person}
-                            firstNameOnly
-                            location={visitor.person.city}
-                            compatibility={visitor.person.compatibilityScore}
-                            detail={formatRelativeTime(visitor.viewedAt)}
-                            fillAvailableSpace={isSingleProfileResult}
-                            onPress={() =>
-                              setSelectedLikeProfile({
-                                person: visitor.person,
-                                canRespond: false,
-                              })
-                            }
-                          />
-                          {visitor.hasActiveMatch ? (
-                            <Pressable
-                              accessibilityRole="button"
-                              onPress={() => setActiveTab("chats")}
-                              style={styles.visitorMessageButton}
-                            >
-                              <MessageCircle
-                                color="#331B1D"
-                                fill="#331B1D"
-                                size={14}
-                              />
-                              <Text style={styles.receivedLikeBackText}>
-                                Message
-                              </Text>
-                            </Pressable>
-                          ) : (
-                            <View style={styles.profileTileActions}>
-                              <Pressable
-                                accessibilityRole="button"
-                                disabled={isRespondingToLike}
-                                onPress={() =>
-                                  void decideProfileVisitor(visitor.id, "pass")
-                                }
-                                style={[
-                                  styles.receivedLikePass,
-                                  isRespondingToLike && styles.disabled,
-                                ]}
-                              >
-                                <Text style={styles.receivedLikePassText}>
-                                  Pass
-                                </Text>
-                              </Pressable>
-                              <Pressable
-                                accessibilityRole="button"
-                                disabled={isRespondingToLike}
-                                onPress={() =>
-                                  void decideProfileVisitor(visitor.id, "like")
-                                }
-                                style={[
-                                  styles.receivedLikeBack,
-                                  isRespondingToLike && styles.disabled,
-                                ]}
-                              >
-                                <Heart
-                                  color="#331B1D"
-                                  fill="#331B1D"
-                                  size={14}
-                                />
-                                <Text style={styles.receivedLikeBackText}>
-                                  Like
-                                </Text>
-                              </Pressable>
-                            </View>
-                          )}
-                        </View>
-                      ))}
+                      {filteredProfileVisitors.map((visitor) => {
+                        const visitorLikedYou = incomingLikes.some(
+                          (like) => like.person.id === visitor.person.id,
+                        );
+                        return (
+                          <View
+                            key={visitor.id}
+                            style={styles.profileTileColumn}
+                          >
+                            <ProfileTile
+                              person={visitor.person}
+                              firstNameOnly
+                              location={visitor.person.city}
+                              compatibility={visitor.person.compatibilityScore}
+                              detail={
+                                visitorLikedYou
+                                  ? `${getLikedYouPastText(visitor.person.gender)} · ${formatRelativeTime(visitor.viewedAt)}`
+                                  : formatRelativeTime(visitor.viewedAt)
+                              }
+                              actions={
+                                visitor.hasActiveMatch
+                                  ? [
+                                      {
+                                        label: `Message ${visitor.person.name}`,
+                                        icon: MessageCircle,
+                                        onPress: () => {
+                                          setPendingChatPersonId(
+                                            visitor.person.id,
+                                          );
+                                          setActiveTab("chats");
+                                        },
+                                        primary: true,
+                                      },
+                                    ]
+                                  : [
+                                      {
+                                        label: `Pass on ${visitor.person.name}`,
+                                        icon: X,
+                                        onPress: () =>
+                                          void decideProfileVisitor(
+                                            visitor.id,
+                                            "pass",
+                                          ),
+                                        disabled: isRespondingToLike,
+                                      },
+                                      {
+                                        label: `Like back ${visitor.person.name}`,
+                                        icon: HeartHandshake,
+                                        onPress: () =>
+                                          void decideProfileVisitor(
+                                            visitor.id,
+                                            "like",
+                                          ),
+                                        disabled: isRespondingToLike,
+                                        primary: true,
+                                      },
+                                    ]
+                              }
+                              onPress={() =>
+                                setSelectedLikeProfile({
+                                  person: visitor.person,
+                                  canRespond: false,
+                                })
+                              }
+                            />
+                          </View>
+                        );
+                      })}
                     </View>
                   ) : likesSection === "visitors" ? (
                     likesError ? null : (
@@ -3187,8 +3653,7 @@ function DiscoveryApp({
                       onPress={() => setActiveTab("discover")}
                       buttonText="Meet someone"
                     />
-                  ) : likesSection === "matches" &&
-                    !likesFeed?.matches.length ? (
+                  ) : likesSection === "matches" && !orderedMatches.length ? (
                     <EmptyState
                       symbol="✦"
                       title="Your mutual matches will appear here"
@@ -3207,28 +3672,53 @@ function DiscoveryApp({
               userId={userId}
               colors={profileColors}
               onCallActive={setIsVideoCallActive}
-              onViewMatches={() => {
-                setLikesSection("matches");
-                setActiveTab("likes");
+              onOpenMatchedChat={(matchedUserId) => {
+                setPendingChatPersonId(matchedUserId);
+                setActiveTab("chats");
               }}
             />
           )}
 
           {activeTab === "chats" && (
-            <ChatScreen
-              userId={userId}
-              colors={profileColors}
-              onSessionExpired={onSessionExpired}
-              onCallActive={setIsVideoCallActive}
-            />
-          )}
-
-          {activeTab === "chemistry" && (
-            <ChemistryScreen
-              userId={userId}
-              localProfile={localProfile}
-              colors={profileColors}
-            />
+            <>
+              <View
+                style={[
+                  styles.chatScreenContainer,
+                  isChemistryOpen && styles.hiddenScreen,
+                ]}
+              >
+                <ChatScreen
+                  userId={userId}
+                  colors={profileColors}
+                  onUnreadCountChange={setUnreadChatCount}
+                  onSessionExpired={onSessionExpired}
+                  onCallActive={setIsVideoCallActive}
+                  initialPersonId={pendingChatPersonId}
+                  onInitialConversationOpened={() =>
+                    setPendingChatPersonId(null)
+                  }
+                  onOpenChemistry={(matchId) => {
+                    setPendingChemistryMatchId(matchId);
+                    setIsChemistryOpen(true);
+                  }}
+                />
+              </View>
+              {isChemistryOpen ? (
+                <ChemistryScreen
+                  userId={userId}
+                  localProfile={localProfile}
+                  colors={profileColors}
+                  initialMatchId={pendingChemistryMatchId}
+                  onInitialMatchSelected={() =>
+                    setPendingChemistryMatchId(null)
+                  }
+                  onClose={() => {
+                    setIsChemistryOpen(false);
+                    setPendingChemistryMatchId(null);
+                  }}
+                />
+              ) : null}
+            </>
           )}
 
           {activeTab === "profile" && (
@@ -3236,6 +3726,7 @@ function DiscoveryApp({
               profile={localProfile}
               userId={userId}
               userEmail={userEmail}
+              initialPanel={profilePanelToOpen}
               onEditProfile={(step) => setEditingStep(step ?? "profile")}
               onSignOut={() => {
                 void removePushNotificationRegistration(userId)
@@ -3258,7 +3749,9 @@ function DiscoveryApp({
             <View style={styles.notificationPageHeader}>
               <View style={styles.notificationHeaderTopline}>
                 <View style={styles.notificationHeaderCopy}>
-                  <Text style={styles.notificationModalTitle}>Notifications</Text>
+                  <Text style={styles.notificationModalTitle}>
+                    Notifications
+                  </Text>
                   <Text style={styles.notificationHeaderEyebrow}>
                     UPDATES, ALL IN ONE PLACE
                   </Text>
@@ -3281,7 +3774,13 @@ function DiscoveryApp({
                     style={styles.notificationCloseButton}
                   >
                     {isLoadingNotifications ? (
-                      <ActivityIndicator color="#FAF7F4" size="small" />
+                      <VeyraLoader
+                        size={8}
+                        imageWidth={20}
+                        imageHeight={20}
+                        imageMarginBottom={0}
+                        loaderShown={false}
+                      />
                     ) : (
                       <RefreshCw color="#FAF7F4" size={16} />
                     )}
@@ -3313,11 +3812,13 @@ function DiscoveryApp({
               </View>
               {!selectedNotificationId ? (
                 <View style={styles.notificationFilterBar}>
-                  {([
-                    ["all", "All"],
-                    ["unread", "Unread"],
-                    ["read", "Read"],
-                  ] as const).map(([filter, label]) => {
+                  {(
+                    [
+                      ["all", "All"],
+                      ["unread", "Unread"],
+                      ["read", "Read"],
+                    ] as const
+                  ).map(([filter, label]) => {
                     const selected = notificationFilter === filter;
                     return (
                       <Pressable
@@ -3333,7 +3834,8 @@ function DiscoveryApp({
                         <Text
                           style={[
                             styles.notificationFilterChipText,
-                            selected && styles.notificationFilterChipTextSelected,
+                            selected &&
+                              styles.notificationFilterChipTextSelected,
                           ]}
                         >
                           {label}
@@ -3341,6 +3843,28 @@ function DiscoveryApp({
                       </Pressable>
                     );
                   })}
+                  {unreadNotificationCount > 0 ? (
+                    <Pressable
+                      accessibilityRole="button"
+                      disabled={isMarkingAllNotificationsRead}
+                      onPress={() => void markAllNotificationsRead()}
+                      style={styles.notificationMarkAllButton}
+                    >
+                      {isMarkingAllNotificationsRead ? (
+                        <VeyraLoader
+                          size="small"
+                          imageWidth={20}
+                          imageHeight={20}
+                          imageMarginBottom={0}
+                          loaderShown={false}
+                        />
+                      ) : (
+                        <Text style={styles.notificationMarkAllText}>
+                          Read all
+                        </Text>
+                      )}
+                    </Pressable>
+                  ) : null}
                 </View>
               ) : null}
             </View>
@@ -3376,7 +3900,12 @@ function DiscoveryApp({
                   accessibilityRole="progressbar"
                   style={styles.notificationEmptyState}
                 >
-                  <ActivityIndicator color={ACCENT} />
+                  <VeyraLoader
+                    size={30}
+                    imageWidth={48}
+                    imageHeight={48}
+                    imageMarginBottom={8}
+                  />
                   <Text style={styles.notificationEmptyCopy}>
                     Loading notifications…
                   </Text>
@@ -3471,11 +4000,12 @@ function DiscoveryApp({
               ) : filteredNotifications.length ? (
                 filteredNotifications.map((notification, index) => {
                   const group = notificationDateGroup(notification.created_at);
-                  const previousGroup = index > 0
-                    ? notificationDateGroup(
-                        filteredNotifications[index - 1].created_at,
-                      )
-                    : null;
+                  const previousGroup =
+                    index > 0
+                      ? notificationDateGroup(
+                          filteredNotifications[index - 1].created_at,
+                        )
+                      : null;
                   return (
                     <Fragment key={notification.id}>
                       {group !== previousGroup ? (
@@ -3550,11 +4080,11 @@ function DiscoveryApp({
           </View>
         ) : null}
 
-        {!isVideoCallActive ? (
+        {!isVideoCallActive && !isChemistryOpen ? (
           <View
             style={[
               styles.tabBar,
-              activeTab === "profile" && {
+              (activeTab === "profile" || activeTab === "discover") && {
                 backgroundColor: profileColors.tabBar,
                 borderTopColor: profileColors.border,
               },
@@ -3564,44 +4094,63 @@ function DiscoveryApp({
               label="Discover"
               icon={Compass}
               active={activeTab === "discover"}
-              onPress={() => setActiveTab("discover")}
-              themeColors={activeTab === "profile" ? profileColors : undefined}
+              activeColor={ACCENT}
+              onPress={() => navigateToTab("discover")}
+              themeColors={
+                activeTab === "profile" || activeTab === "discover"
+                  ? profileColors
+                  : undefined
+              }
             />
             <TabButton
               label="Video"
               icon={Video}
               active={activeTab === "video"}
-              onPress={() => setActiveTab("video")}
-              themeColors={activeTab === "profile" ? profileColors : undefined}
+              activeColor={ACCENT}
+              onPress={() => navigateToTab("video")}
+              themeColors={
+                activeTab === "profile" || activeTab === "discover"
+                  ? profileColors
+                  : undefined
+              }
             />
             <TabButton
               label="Likes"
               icon={Heart}
               active={activeTab === "likes"}
-              onPress={() => setActiveTab("likes")}
+              activeColor={ACCENT}
+              onPress={() => navigateToTab("likes")}
               count={incomingLikes.length}
-              themeColors={activeTab === "profile" ? profileColors : undefined}
+              themeColors={
+                activeTab === "profile" || activeTab === "discover"
+                  ? profileColors
+                  : undefined
+              }
             />
             <TabButton
               label="Chats"
               icon={MessageCircle}
               active={activeTab === "chats"}
-              onPress={() => setActiveTab("chats")}
-              themeColors={activeTab === "profile" ? profileColors : undefined}
-            />
-            <TabButton
-              label="Chemistry"
-              icon={Sparkles}
-              active={activeTab === "chemistry"}
-              onPress={() => setActiveTab("chemistry")}
-              themeColors={activeTab === "profile" ? profileColors : undefined}
+              activeColor={ACCENT}
+              onPress={() => navigateToTab("chats")}
+              count={unreadChatCount}
+              themeColors={
+                activeTab === "profile" || activeTab === "discover"
+                  ? profileColors
+                  : undefined
+              }
             />
             <TabButton
               label="Profile"
               icon={UserRound}
               active={activeTab === "profile"}
-              onPress={() => setActiveTab("profile")}
-              themeColors={activeTab === "profile" ? profileColors : undefined}
+              activeColor={ACCENT}
+              onPress={() => navigateToTab("profile")}
+              themeColors={
+                activeTab === "profile" || activeTab === "discover"
+                  ? profileColors
+                  : undefined
+              }
             />
           </View>
         ) : null}
@@ -3614,8 +4163,12 @@ function LoadingScreen() {
   return (
     <SafeAreaView style={gateStyles.screen}>
       <View style={gateStyles.centered}>
-        <Text style={gateStyles.wordmark}>VEYRA</Text>
-        <ActivityIndicator color={ACCENT} />
+        <VeyraLoader
+          size={30}
+          imageWidth={48}
+          imageHeight={48}
+          imageMarginBottom={8}
+        />
       </View>
     </SafeAreaView>
   );
@@ -3651,12 +4204,14 @@ function ActionButton({
   accessibilityLabel,
   label,
   kind,
+  icon: Icon,
   disabled = false,
   onPress,
 }: {
   accessibilityLabel: string;
   label: string;
   kind: "pass" | "spark" | "like";
+  icon?: LucideIcon;
   disabled?: boolean;
   onPress: () => void;
 }) {
@@ -3674,9 +4229,13 @@ function ActionButton({
         disabled && styles.disabled,
       ]}
     >
-      <Text style={[styles.actionSymbol, styles[`${kind}Symbol`]]}>
-        {label}
-      </Text>
+      {Icon ? (
+        <Icon color="#331B1D" size={25} strokeWidth={2.2} />
+      ) : (
+        <Text style={[styles.actionSymbol, styles[`${kind}Symbol`]]}>
+          {label}
+        </Text>
+      )}
     </Pressable>
   );
 }
@@ -3687,6 +4246,7 @@ function TabButton({
   active,
   onPress,
   count,
+  activeColor,
   themeColors,
 }: {
   label: string;
@@ -3694,14 +4254,15 @@ function TabButton({
   active: boolean;
   onPress: () => void;
   count?: number;
+  activeColor?: string;
   themeColors?: SystemColors;
 }) {
   const iconColor = themeColors
     ? active
-      ? themeColors.brandMagenta
+      ? (activeColor ?? ACCENT)
       : themeColors.textMuted
     : active
-      ? brandColors.magenta
+      ? (activeColor ?? ACCENT)
       : "#796D72";
 
   return (
@@ -3712,11 +4273,29 @@ function TabButton({
       onPress={onPress}
       style={styles.tab}
     >
-      <View style={styles.tabSymbolWrap}>
+      <View
+        style={[styles.tabSymbolWrap, active && styles.tabSymbolWrapActive]}
+      >
         <Icon color={iconColor} size={21} strokeWidth={active ? 2.25 : 1.8} />
         {!!count && (
-          <View style={styles.tabCount}>
-            <Text style={styles.tabCountText}>{count}</Text>
+          <View
+            style={[
+              styles.tabCount,
+              {
+                backgroundColor: iconColor,
+              },
+            ]}
+          >
+            <Text
+              style={[
+                styles.tabCountText,
+                {
+                  color: "#ffffff",
+                },
+              ]}
+            >
+              {count > 9 ? "9+" : count}
+            </Text>
           </View>
         )}
       </View>
@@ -3727,8 +4306,9 @@ function TabButton({
           styles.tabLabel,
           active && styles.tabLabelActive,
           themeColors && {
-            color: active ? themeColors.brandMagenta : themeColors.textMuted,
+            color: active ? (activeColor ?? ACCENT) : themeColors.textMuted,
           },
+          active && activeColor ? { color: activeColor } : null,
         ]}
       >
         {label}
@@ -3832,24 +4412,43 @@ function PersonRow({
 function ProfileTile({
   person,
   detail,
-  fillAvailableSpace = false,
   firstNameOnly = false,
+  activityBadge,
   location,
   compatibility,
+  actions = [],
   onPress,
 }: {
   person: Person;
   detail: string;
-  fillAvailableSpace?: boolean;
   firstNameOnly?: boolean;
+  activityBadge?: string;
   location?: string | null;
   compatibility?: number | null;
+  actions?: {
+    label: string;
+    icon: LucideIcon;
+    onPress: () => void;
+    disabled?: boolean;
+    primary?: boolean;
+  }[];
   onPress: () => void;
 }) {
   const content = (
     <View style={styles.profileTileContent}>
+      {activityBadge ? (
+        <View style={styles.matchActivityBadge}>
+          <View style={styles.matchActivityDot} />
+          <Text style={styles.matchActivityText}>{activityBadge}</Text>
+        </View>
+      ) : null}
       {isNewUser(person.accountCreatedAt) ? (
-        <View style={styles.profileTileNewBadge}>
+        <View
+          style={[
+            styles.profileTileNewBadge,
+            activityBadge && styles.profileTileNewBadgeWithActivity,
+          ]}
+        >
           <Text style={styles.profileTileNewText}>New</Text>
         </View>
       ) : null}
@@ -3887,36 +4486,61 @@ function ProfileTile({
   );
 
   return (
-    <Pressable
-      accessibilityRole="button"
-      accessibilityLabel={`View ${person.name}'s profile${isNewUser(person.accountCreatedAt) ? ", new user" : ""}`}
-      onPress={onPress}
-      style={[styles.profileTile, fillAvailableSpace && styles.profileTileFill]}
-    >
-      {person.image ? (
-        <ImageBackground
-          source={{ uri: person.image }}
-          resizeMode="cover"
-          style={[
-            styles.profileTileImage,
-            fillAvailableSpace && styles.profileTileImageFill,
-          ]}
-          imageStyle={styles.profileTileImageBorder}
-        >
-          {content}
-        </ImageBackground>
-      ) : (
-        <View
-          style={[
-            styles.profileTileImage,
-            styles.profileTileImagePlaceholder,
-            fillAvailableSpace && styles.profileTileImageFill,
-          ]}
-        >
-          {content}
+    <View style={styles.profileTile}>
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel={`View ${person.name}'s profile${isNewUser(person.accountCreatedAt) ? ", new user" : ""}`}
+        onPress={onPress}
+        style={styles.profileTilePressable}
+      >
+        {person.image ? (
+          <ImageBackground
+            source={{ uri: person.image }}
+            resizeMode="cover"
+            style={styles.profileTileImage}
+            imageStyle={styles.profileTileImageBorder}
+          >
+            {content}
+          </ImageBackground>
+        ) : (
+          <View
+            style={[
+              styles.profileTileImage,
+              styles.profileTileImagePlaceholder,
+            ]}
+          >
+            {content}
+          </View>
+        )}
+      </Pressable>
+      {actions.length ? (
+        <View style={styles.profileTileActionOverlay}>
+          {actions.map(
+            ({ label, icon: Icon, onPress: onAction, disabled, primary }) => (
+              <Pressable
+                key={label}
+                accessibilityRole="button"
+                accessibilityLabel={label}
+                disabled={disabled}
+                onPress={onAction}
+                style={[
+                  styles.profileTileActionButton,
+                  primary && styles.profileTileActionButtonPrimary,
+                  disabled && styles.disabled,
+                ]}
+              >
+                <Icon
+                  color={primary ? "#331B1D" : "#FFF8F4"}
+                  fill={primary && Icon === Heart ? "#331B1D" : "transparent"}
+                  size={18}
+                  strokeWidth={2.2}
+                />
+              </Pressable>
+            ),
+          )}
         </View>
-      )}
-    </Pressable>
+      ) : null}
+    </View>
   );
 }
 
@@ -3973,6 +4597,20 @@ function getFirstName(name: string): string {
   return name.trim().split(/\s+/)[0] ?? name;
 }
 
+function getLikedYouPastText(gender?: string | null): string {
+  const normalizedGender = gender?.trim().toLowerCase();
+  if (normalizedGender === "man") return "He liked you";
+  if (normalizedGender === "woman") return "She liked you";
+  return "They liked you";
+}
+
+function getLikesYouText(gender?: string | null): string {
+  const normalizedGender = gender?.trim().toLowerCase();
+  if (normalizedGender === "man") return "He likes you";
+  if (normalizedGender === "woman") return "She likes you";
+  return "They like you";
+}
+
 function isNewVisitor(firstViewedAt: string): boolean {
   const firstViewed = Date.parse(firstViewedAt);
   const hoursSinceFirstVisit = (Date.now() - firstViewed) / (1000 * 60 * 60);
@@ -4026,6 +4664,12 @@ const styles = StyleSheet.create({
     flex: 1,
     paddingHorizontal: 20,
   },
+  chatScreenContainer: {
+    flex: 1,
+  },
+  hiddenScreen: {
+    display: "none",
+  },
   header: {
     height: 58,
     flexDirection: "row",
@@ -4059,7 +4703,7 @@ const styles = StyleSheet.create({
     borderRadius: 9,
     borderWidth: 1.5,
     borderColor: "#211B1E",
-    backgroundColor: brandColors.magenta,
+    backgroundColor: ACCENT,
   },
   notificationUnreadBadgeText: {
     color: "#FFFFFF",
@@ -4074,6 +4718,11 @@ const styles = StyleSheet.create({
     width: 100,
     height: 56,
   },
+  discoveryWordmark: {
+    fontSize: 17,
+    fontWeight: "800",
+    letterSpacing: 3.2,
+  },
   locationButton: {
     height: 36,
     flexDirection: "row",
@@ -4085,17 +4734,17 @@ const styles = StyleSheet.create({
     backgroundColor: "#211B1E",
   },
   locationPin: {
-    color: brandColors.magenta,
+    color: ACCENT,
     fontSize: 18,
     marginRight: 5,
   },
   locationText: {
-    color: brandColors.magenta,
+    color: ACCENT,
     fontSize: 12,
     fontWeight: "600",
   },
   locationChevron: {
-    color: brandColors.magenta,
+    color: ACCENT,
     fontSize: 14,
     marginLeft: 7,
     marginTop: -4,
@@ -4157,6 +4806,18 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     gap: 8,
+  },
+  notificationMarkAllButton: {
+    minHeight: 32,
+    marginLeft: "auto",
+    paddingHorizontal: 8,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  notificationMarkAllText: {
+    color: "#DDA8B8",
+    fontSize: 11,
+    fontWeight: "700",
   },
   notificationFilterChip: {
     minHeight: 32,
@@ -4428,33 +5089,55 @@ const styles = StyleSheet.create({
     flex: 1,
     minHeight: 0,
   },
+  discoveryIntro: {
+    minHeight: 70,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 12,
+  },
+  discoveryIntroCopy: {
+    flex: 1,
+  },
+  discoveryEyebrow: {
+    fontSize: 9,
+    fontWeight: "700",
+    letterSpacing: 1.8,
+    marginBottom: 4,
+  },
+  discoveryFilterButton: {
+    minHeight: 38,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 7,
+    paddingHorizontal: 13,
+    borderWidth: 1,
+    borderRadius: 19,
+  },
+  discoveryFilterText: {
+    fontSize: 11,
+    fontWeight: "600",
+  },
   discoveryModes: {
     flexDirection: "row",
     padding: 3,
-    marginBottom: 8,
+    marginBottom: 4,
     borderRadius: 18,
-    backgroundColor: "#2A2124",
   },
   discoveryModeButton: {
     flex: 1,
-    minHeight: 36,
+    minHeight: 38,
     alignItems: "center",
     justifyContent: "center",
     borderRadius: 15,
   },
-  discoveryModeActive: {
-    backgroundColor: brandColors.magentaAccessible,
-  },
   discoveryModeText: {
-    color: "#B8AEB2",
     fontSize: 11,
     fontWeight: "700",
   },
-  discoveryModeTextActive: {
-    color: "#FFFFFF",
-  },
   sectionHeading: {
-    minHeight: 82,
+    minHeight: 64,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
@@ -4464,17 +5147,21 @@ const styles = StyleSheet.create({
     gap: 5,
   },
   eyebrow: {
-    color: brandColors.magenta,
+    color: ACCENT,
     fontSize: 9,
     fontWeight: "700",
     letterSpacing: 1.5,
     marginBottom: 5,
   },
   discoveryHeading: {
-    color: "#FFF8F4",
-    fontSize: 22,
+    fontSize: 25,
     fontWeight: "700",
-    letterSpacing: -0.35,
+    letterSpacing: -0.55,
+  },
+  discoverySectionTitle: {
+    fontSize: 12,
+    fontWeight: "500",
+    letterSpacing: 0.1,
   },
   heading: {
     color: "#FFF8F4",
@@ -4503,7 +5190,7 @@ const styles = StyleSheet.create({
     gap: 5,
   },
   filterLabel: {
-    color: brandColors.magenta,
+    color: ACCENT,
     fontSize: 8,
     fontWeight: "700",
     letterSpacing: 1.2,
@@ -4522,8 +5209,8 @@ const styles = StyleSheet.create({
     borderRadius: 14,
   },
   filterChipActive: {
-    borderColor: brandColors.magenta,
-    backgroundColor: "#52353A",
+    borderColor: ACCENT,
+    backgroundColor: ACCENT,
   },
   filterChipText: {
     color: "#B8AEB2",
@@ -4531,7 +5218,7 @@ const styles = StyleSheet.create({
     fontWeight: "600",
   },
   filterChipTextActive: {
-    color: "#FFF8F4",
+    color: "#331B1D",
   },
   exploreInvitation: {
     width: "100%",
@@ -4629,7 +5316,7 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     borderWidth: 1,
-    borderColor: "rgba(253, 21, 102, 0.6)",
+    borderColor: "rgba(233, 139, 120, 0.65)",
     borderRadius: 41,
     backgroundColor: "rgba(33, 27, 30, 0.92)",
   },
@@ -4639,13 +5326,13 @@ const styles = StyleSheet.create({
     fontWeight: "800",
     letterSpacing: 1.8,
     marginTop: 10,
-    textShadowColor: "#4802A2",
+    textShadowColor: ACCENT,
     textShadowOffset: { width: 0, height: 1 },
     textShadowRadius: 8,
   },
   swipeLikeBadge: {
     left: 22,
-    borderColor: "#FF8FA3",
+    borderColor: ACCENT,
   },
   swipePassBadge: {
     right: 22,
@@ -4661,13 +5348,13 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     paddingVertical: 8,
     borderWidth: 1,
-    borderColor: "#FF8FA3",
+    borderColor: ACCENT,
     borderRadius: 18,
     backgroundColor: "rgba(33, 27, 30, 0.9)",
     zIndex: 6,
   },
   likedBackBadgeIcon: {
-    color: "#FF8FA3",
+    color: ACCENT,
     fontSize: 14,
     fontWeight: "800",
   },
@@ -4690,7 +5377,7 @@ const styles = StyleSheet.create({
     textAlign: "center",
   },
   swipeFeedbackIcon: {
-    color: "#FF8FA3",
+    color: ACCENT,
     fontSize: 28,
     lineHeight: 31,
     fontWeight: "800",
@@ -4825,7 +5512,7 @@ const styles = StyleSheet.create({
     gap: 6,
     paddingHorizontal: 11,
     borderWidth: 1,
-    borderColor: brandColors.magenta,
+    borderColor: ACCENT,
     borderRadius: 18,
     backgroundColor: "rgba(28, 22, 24, 0.65)",
   },
@@ -4896,7 +5583,7 @@ const styles = StyleSheet.create({
     fontWeight: "700",
   },
   nameText: {
-    color: brandColors.magenta,
+    color: ACCENT,
     fontSize: 28,
     fontWeight: "700",
     letterSpacing: -0.35,
@@ -4975,7 +5662,7 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     paddingHorizontal: 18,
     borderRadius: 22,
-    backgroundColor: brandColors.magentaAccessible,
+    backgroundColor: ACCENT,
   },
   feedback: {
     height: 15,
@@ -5110,101 +5797,55 @@ const styles = StyleSheet.create({
   profileDetailsSheet: {
     width: "100%",
     maxWidth: 540,
-    height: "92%",
+    height: "94%",
     overflow: "hidden",
     borderWidth: 1,
-    borderColor: "#4A393F",
+    borderColor: "#59434A",
     borderBottomWidth: 0,
-    borderTopLeftRadius: 28,
-    borderTopRightRadius: 28,
-    backgroundColor: "#211B1E",
+    borderTopLeftRadius: 30,
+    borderTopRightRadius: 30,
+    backgroundColor: "#20191D",
   },
   profileDetailsTopBar: {
-    height: 46,
+    height: 54,
     alignItems: "center",
-    justifyContent: "center",
+    justifyContent: "flex-end",
+    paddingBottom: 8,
   },
   profileDetailsHandle: {
+    position: "absolute",
+    top: 8,
     width: 38,
     height: 4,
     borderRadius: 2,
     backgroundColor: "#6A585E",
   },
+  profileDetailsTopTitle: {
+    color: "#B8A7AC",
+    fontSize: 9,
+    fontWeight: "800",
+    letterSpacing: 1.8,
+  },
   profileDetailsClose: {
     position: "absolute",
-    top: 8,
-    right: 16,
-    width: 32,
-    height: 32,
+    top: 14,
+    right: 18,
+    width: 34,
+    height: 34,
     alignItems: "center",
     justifyContent: "center",
     borderWidth: 1,
-    borderColor: "#493A3F",
-    borderRadius: 16,
-    backgroundColor: "#30262A",
-  },
-  profileDetailsCloseText: {
-    color: "#FFF8F4",
-    fontSize: 22,
-    lineHeight: 24,
-    fontWeight: "400",
-  },
-  profileDetailsHeroFrame: {
-    height: 330,
-    borderRadius: 20,
-    overflow: "hidden",
-    backgroundColor: "#3A3034",
-  },
-  profileDetailsPhotoIndicators: {
-    position: "absolute",
-    top: 12,
-    left: 0,
-    right: 0,
-    flexDirection: "row",
-    justifyContent: "center",
-    gap: 5,
-  },
-  profileDetailsPhotoIndicator: {
-    width: 6,
-    height: 6,
-    borderRadius: 3,
-    backgroundColor: "rgba(255, 248, 244, 0.48)",
-  },
-  profileDetailsPhotoIndicatorActive: {
-    width: 16,
-    backgroundColor: "#FFF8F4",
-  },
-  profileDetailsPhotoScroller: {
-    flex: 1,
-  },
-  profileDetailsPhotoPage: {
-    height: 330,
-    overflow: "hidden",
-  },
-  profileDetailsHeroPhoto: {
-    position: "absolute",
-    top: 0,
-    left: 0,
-    right: 0,
-    bottom: 0,
-    width: "100%",
-    height: "100%",
-    backgroundColor: "#211B1E",
-  },
-  profileDetailsHeroShade: {
-    position: "absolute",
-    top: 0,
-    left: 0,
-    right: 0,
-    bottom: 0,
-    justifyContent: "flex-end",
-    padding: 18,
-    backgroundColor: "rgba(18, 12, 15, 0.20)",
+    borderColor: "rgba(255, 248, 244, 0.18)",
+    borderRadius: 17,
+    backgroundColor: "#34282D",
   },
   profileDetailsHeroCopy: {
-    padding: 14,
-    borderRadius: 16,
-    backgroundColor: "rgba(20, 13, 16, 0.68)",
+    padding: 15,
+    marginTop: 12,
+    borderWidth: 1,
+    borderColor: "rgba(255, 248, 244, 0.18)",
+    borderRadius: 20,
+    backgroundColor: "rgba(20, 13, 16, 0.76)",
   },
   profileDetailsEyebrow: {
     color: ACCENT,
@@ -5221,16 +5862,16 @@ const styles = StyleSheet.create({
   },
   profileDetailsName: {
     color: "#FFF8F4",
-    fontSize: 24,
+    fontSize: 27,
     fontWeight: "800",
-    letterSpacing: -0.5,
+    letterSpacing: -0.7,
     flexShrink: 1,
   },
   profileDetailsLocation: {
     color: "#E8DAD8",
     fontSize: 12,
     fontWeight: "500",
-    marginTop: 4,
+    marginTop: 7,
   },
   profileDetailsPhotoPlaceholder: {
     flex: 1,
@@ -5250,26 +5891,21 @@ const styles = StyleSheet.create({
     fontWeight: "700",
     letterSpacing: 1.8,
   },
-  profileDetailsPlaceholderCopy: {
-    position: "absolute",
-    left: 18,
-    bottom: 18,
-  },
   profileDetailsBody: {
-    paddingHorizontal: 4,
-    paddingTop: 6,
-    paddingBottom: 18,
+    paddingHorizontal: 2,
+    paddingTop: 2,
+    paddingBottom: 22,
   },
   likeProfileContent: {
-    paddingHorizontal: 20,
-    paddingBottom: 20,
+    paddingHorizontal: 18,
+    paddingBottom: 24,
   },
   likeProfileLabel: {
-    color: brandColors.magenta,
+    color: ACCENT,
     fontSize: 9,
     fontWeight: "700",
     letterSpacing: 1.5,
-    marginTop: 16,
+    marginBottom: 2,
   },
   likeProfileCompatibility: {
     flexDirection: "row",
@@ -5289,25 +5925,28 @@ const styles = StyleSheet.create({
     marginTop: 3,
   },
   profileDetailsSection: {
-    marginTop: 18,
+    padding: 15,
+    marginTop: 12,
+    gap: 8,
+    borderWidth: 1,
+    borderColor: "#3E3036",
+    borderRadius: 18,
+    backgroundColor: "#292126",
   },
   profileDetailsOccupation: {
     color: "#FFF8F4",
     fontSize: 15,
     fontWeight: "600",
-    marginTop: 6,
   },
   profileDetailsBio: {
     color: "#E3D8D8",
     fontSize: 13,
     lineHeight: 20,
-    marginTop: 6,
   },
   profileDetailsChips: {
     flexDirection: "row",
     flexWrap: "wrap",
     gap: 8,
-    marginTop: 8,
   },
   profileDetailsChip: {
     paddingHorizontal: 12,
@@ -5326,7 +5965,7 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   profileDetailsCompatibilityLabel: {
-    color: brandColors.magenta,
+    color: ACCENT,
     fontSize: 9,
     fontWeight: "800",
     letterSpacing: 1.3,
@@ -5337,12 +5976,12 @@ const styles = StyleSheet.create({
     marginLeft: 10,
   },
   profileDetailsFooter: {
-    paddingHorizontal: 20,
+    paddingHorizontal: 18,
     paddingTop: 12,
     paddingBottom: 20,
     borderTopWidth: StyleSheet.hairlineWidth,
     borderTopColor: "#493A3F",
-    backgroundColor: "#211B1E",
+    backgroundColor: "#20191D",
   },
   profileDetailsDoneButton: {
     minHeight: 48,
@@ -5389,7 +6028,7 @@ const styles = StyleSheet.create({
     fontWeight: "700",
   },
   compatibilityModalEyebrow: {
-    color: brandColors.magenta,
+    color: ACCENT,
     fontSize: 9,
     fontWeight: "700",
     letterSpacing: 1.8,
@@ -5469,7 +6108,7 @@ const styles = StyleSheet.create({
     lineHeight: 34,
   },
   sparkSymbol: {
-    color: brandColors.magenta,
+    color: ACCENT,
     fontSize: 20,
   },
   likeSymbol: {
@@ -5478,10 +6117,12 @@ const styles = StyleSheet.create({
     marginTop: 2,
   },
   tabBar: {
-    height: 61,
+    height: 68,
     flexDirection: "row",
     justifyContent: "space-around",
     alignItems: "center",
+    paddingHorizontal: 6,
+    paddingBottom: 4,
     borderTopWidth: StyleSheet.hairlineWidth,
     borderTopColor: "#342B2F",
   },
@@ -5492,9 +6133,14 @@ const styles = StyleSheet.create({
     minHeight: 52,
   },
   tabSymbolWrap: {
-    height: 26,
+    height: 30,
+    minWidth: 42,
+    borderRadius: 15,
     alignItems: "center",
     justifyContent: "center",
+  },
+  tabSymbolWrapActive: {
+    backgroundColor: "rgba(221, 168, 184, 0.13)",
   },
   tabLabel: {
     maxWidth: "100%",
@@ -5505,13 +6151,13 @@ const styles = StyleSheet.create({
     textAlign: "center",
   },
   tabLabelActive: {
-    color: brandColors.magenta,
+    color: ACCENT,
     fontWeight: "700",
   },
   tabCount: {
     position: "absolute",
-    top: -1,
-    right: -9,
+    top: 1,
+    right: 4,
     minWidth: 14,
     height: 14,
     alignItems: "center",
@@ -5562,15 +6208,14 @@ const styles = StyleSheet.create({
   },
   likesDirectionTabs: {
     flexDirection: "row",
-    alignSelf: "flex-start",
-    gap: 8,
-    marginTop: 10,
+    flexShrink: 0,
+    gap: 5,
   },
   likesDirectionButton: {
-    minHeight: 30,
+    minHeight: 27,
     justifyContent: "center",
-    paddingHorizontal: 13,
-    borderRadius: 15,
+    paddingHorizontal: 9,
+    borderRadius: 14,
     backgroundColor: "#2A2124",
   },
   likesDirectionButtonActive: {
@@ -5586,8 +6231,7 @@ const styles = StyleSheet.create({
   },
   visitorFilterTabs: {
     flexDirection: "row",
-    gap: 8,
-    marginTop: 10,
+    gap: 6,
   },
   visitorFilterButton: {
     minHeight: 28,
@@ -5607,6 +6251,52 @@ const styles = StyleSheet.create({
   visitorFilterTextActive: {
     color: "#FFF8F4",
   },
+  visitorControls: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 8,
+    marginTop: 10,
+  },
+  visitorPrivacyButton: {
+    minHeight: 30,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 5,
+    paddingHorizontal: 10,
+    borderRadius: 15,
+    backgroundColor: "#2A2124",
+  },
+  visitorPrivacyText: {
+    color: ACCENT,
+    fontSize: 10,
+    fontWeight: "700",
+  },
+  matchActivityBadge: {
+    position: "absolute",
+    top: 8,
+    left: 8,
+    zIndex: 2,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 5,
+    paddingHorizontal: 8,
+    paddingVertical: 5,
+    borderRadius: 12,
+    backgroundColor: "#063E24",
+  },
+  matchActivityDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: "#29D678",
+  },
+  matchActivityText: {
+    color: "#29D678",
+    fontSize: 9,
+    fontWeight: "800",
+  },
   likesList: {
     flexGrow: 1,
     paddingTop: 12,
@@ -5615,22 +6305,13 @@ const styles = StyleSheet.create({
   likesScroll: {
     flex: 1,
   },
-  likesListSingle: {
-    flexGrow: 1,
-  },
   profileTilesGrid: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    justifyContent: "space-between",
+    flexDirection: "column",
     flexGrow: 1,
-    rowGap: 14,
+    gap: 14,
   },
   profileTileColumn: {
-    width: "48%",
-  },
-  profileTileColumnSingle: {
     width: "100%",
-    flex: 1,
   },
   profileTile: {
     width: "100%",
@@ -5638,17 +6319,13 @@ const styles = StyleSheet.create({
     overflow: "hidden",
     borderRadius: 16,
     backgroundColor: "#3A3034",
-  },
-  profileTileFill: {
-    flex: 1,
-    aspectRatio: undefined,
-    minHeight: 420,
+    position: "relative",
   },
   profileTileImage: {
     flex: 1,
   },
-  profileTileImageFill: {
-    minHeight: 420,
+  profileTilePressable: {
+    flex: 1,
   },
   profileTileImageBorder: {
     borderRadius: 16,
@@ -5658,15 +6335,22 @@ const styles = StyleSheet.create({
   },
   profileTileContent: {
     flex: 1,
-    justifyContent: "space-between",
+    justifyContent: "flex-end",
     padding: 8,
   },
   profileTileNewBadge: {
-    alignSelf: "flex-start",
+    position: "absolute",
+    top: 8,
+    left: 8,
+    zIndex: 1,
     paddingHorizontal: 8,
     paddingVertical: 4,
     borderRadius: 10,
     backgroundColor: ACCENT,
+  },
+  profileTileNewBadgeWithActivity: {
+    left: undefined,
+    right: 8,
   },
   profileTileNewText: {
     color: "#331B1D",
@@ -5703,29 +6387,38 @@ const styles = StyleSheet.create({
     fontWeight: "700",
     marginTop: 3,
   },
-  profileTileActions: {
+  profileTileActionOverlay: {
+    position: "absolute",
+    right: 8,
+    bottom: 8,
+    alignItems: "center",
     flexDirection: "row",
-    gap: 6,
-    marginTop: 6,
+    gap: 8,
   },
-  visitorMessageButton: {
-    minHeight: 36,
-    flexDirection: "row",
+  profileTileActionButton: {
+    width: 32,
+    height: 32,
     alignItems: "center",
     justifyContent: "center",
-    gap: 6,
-    marginTop: 6,
-    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "rgba(255, 248, 244, 0.45)",
+    borderRadius: 16,
+    backgroundColor: "rgba(18, 14, 16, 0.82)",
+  },
+  profileTileActionButtonPrimary: {
+    borderColor: ACCENT,
     backgroundColor: ACCENT,
   },
   likesSectionHeader: {
-    minHeight: 34,
+    minHeight: 36,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
+    gap: 8,
     marginTop: 8,
   },
   likesSectionHeading: {
+    flexShrink: 1,
     color: "#FFF8F4",
     fontSize: 13,
     fontWeight: "700",
@@ -5875,7 +6568,7 @@ const styles = StyleSheet.create({
     backgroundColor: "#2A2124",
   },
   emptySymbol: {
-    color: brandColors.magenta,
+    color: ACCENT,
     fontSize: 34,
   },
   emptyTitle: {
@@ -5897,7 +6590,7 @@ const styles = StyleSheet.create({
     paddingVertical: 12,
     borderRadius: 22,
     marginTop: 22,
-    backgroundColor: brandColors.magentaAccessible,
+    backgroundColor: ACCENT,
   },
   emptyButtonText: {
     color: "#FFFFFF",

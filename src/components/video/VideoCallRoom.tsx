@@ -9,7 +9,14 @@ import {
   useTracks,
 } from "@livekit/react-native";
 import { Track } from "livekit-client";
-import { Camera, CameraOff, Mic, MicOff } from "lucide-react-native";
+import {
+  Camera,
+  CameraOff,
+  Mic,
+  MicOff,
+  RefreshCw,
+  ShieldCheck,
+} from "lucide-react-native";
 import {
   confirmVideoDiscoveryCallConnected,
   type VideoCallToken,
@@ -20,6 +27,11 @@ export type VideoCallRoomProps = {
   token: VideoCallToken;
   colors: SystemColors;
   otherName: string;
+  initialCameraEnabled?: boolean;
+  initialMicrophoneEnabled?: boolean;
+  initialCameraFacing?: "front" | "back";
+  onSafety?: () => void;
+  fullScreen?: boolean;
   onEnd: () => void;
   onConnected: () => void;
   onError: (error: Error) => void;
@@ -31,8 +43,14 @@ export function VideoCallRoom(props: VideoCallRoomProps) {
       serverUrl={props.token.serverUrl}
       token={props.token.token}
       connect
-      audio
-      video
+      audio={props.initialMicrophoneEnabled ?? true}
+      video={(props.initialCameraEnabled ?? true)
+        ? {
+          facingMode: (props.initialCameraFacing ?? "front") === "front"
+            ? "user"
+            : "environment",
+        }
+        : false}
       onError={props.onError}
       options={{ adaptiveStream: { pixelDensity: "screen" } }}
     >
@@ -45,6 +63,9 @@ function CallRoomContent({
   token,
   colors,
   otherName,
+  initialCameraFacing,
+  onSafety,
+  fullScreen = false,
   onEnd,
   onConnected,
   onError,
@@ -54,6 +75,9 @@ function CallRoomContent({
   const { localParticipant, isCameraEnabled, isMicrophoneEnabled } =
     useLocalParticipant();
   const [mediaError, setMediaError] = useState("");
+  const [cameraFacing, setCameraFacing] = useState(
+    initialCameraFacing ?? "front",
+  );
   const isVerifying = useRef(false);
   const hasConfirmedConnection = useRef(false);
 
@@ -113,6 +137,22 @@ function CallRoomContent({
     }
   };
 
+  const switchCamera = async () => {
+    const nextFacing = cameraFacing === "front" ? "back" : "front";
+    try {
+      await localParticipant.setCameraEnabled(false);
+      await localParticipant.setCameraEnabled(true, {
+        facingMode: nextFacing === "front" ? "user" : "environment",
+      });
+      setCameraFacing(nextFacing);
+      setMediaError("");
+    } catch (error) {
+      setMediaError(
+        error instanceof Error ? error.message : "Could not switch camera.",
+      );
+    }
+  };
+
   const remoteTrack = tracks.find(
     (track) =>
       isTrackReference(track) &&
@@ -127,8 +167,14 @@ function CallRoomContent({
   );
 
   return (
-    <View style={styles.call}>
-      <View style={[styles.remoteVideo, { backgroundColor: colors.primary }]}>
+    <View style={[styles.call, fullScreen && styles.fullScreenCall]}>
+      <View
+        style={[
+          styles.remoteVideo,
+          fullScreen && styles.fullScreenRemoteVideo,
+          { backgroundColor: colors.primary },
+        ]}
+      >
         {remoteTrack && isTrackReference(remoteTrack) ? (
           <VideoTrack
             trackRef={remoteTrack}
@@ -161,6 +207,19 @@ function CallRoomContent({
             {remoteParticipants.length > 0 ? "You’re connected" : "Joining call"}
           </Text>
         </View>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Switch camera"
+          onPress={() => void switchCamera()}
+          disabled={!isCameraEnabled}
+          style={({ pressed }) => [
+            styles.switchCameraButton,
+            pressed && styles.pressed,
+            !isCameraEnabled && styles.disabledControl,
+          ]}
+        >
+          <RefreshCw color="#FFFFFF" size={19} />
+        </Pressable>
       </View>
 
       <View style={styles.callControls}>
@@ -192,6 +251,16 @@ function CallRoomContent({
               <CameraOff color={colors.error} size={22} />
             )}
           </ControlButton>
+          {onSafety ? (
+            <ControlButton
+              label="Report or block"
+              active
+              colors={colors}
+              onPress={onSafety}
+            >
+              <ShieldCheck color={colors.text} size={22} />
+            </ControlButton>
+          ) : null}
           <Pressable
             accessibilityRole="button"
             accessibilityLabel="End video call"
@@ -252,6 +321,13 @@ const styles = StyleSheet.create({
     minHeight: 350,
     overflow: "hidden",
   },
+  fullScreenCall: {
+    minHeight: 0,
+    borderRadius: 0,
+  },
+  fullScreenRemoteVideo: {
+    minHeight: 0,
+  },
   videoPlaceholder: {
     ...StyleSheet.absoluteFill,
     alignItems: "center",
@@ -277,6 +353,20 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
     borderRadius: 18,
     backgroundColor: "rgba(25, 16, 27, 0.72)",
+  },
+  switchCameraButton: {
+    position: "absolute",
+    top: 18,
+    right: 18,
+    width: 42,
+    height: 42,
+    borderRadius: 21,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(25, 16, 27, 0.72)",
+  },
+  disabledControl: {
+    opacity: 0.45,
   },
   callName: {
     color: "#FFFFFF",
@@ -309,7 +399,7 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     justifyContent: "center",
     alignItems: "center",
-    gap: 18,
+    gap: 12,
   },
   controlButton: {
     width: 54,
@@ -320,7 +410,7 @@ const styles = StyleSheet.create({
     borderWidth: 1,
   },
   endButton: {
-    minWidth: 82,
+    minWidth: 70,
     height: 52,
     borderRadius: 26,
     alignItems: "center",

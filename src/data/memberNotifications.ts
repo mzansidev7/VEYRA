@@ -284,6 +284,15 @@ export async function markMemberNotificationRead(id: string): Promise<void> {
   if (error) throw new Error(`Could not update notification status: ${error.message}`);
 }
 
+export async function markAllMemberNotificationsRead(): Promise<void> {
+  const { error } = await getSupabaseClient().rpc(
+    "mark_my_member_notifications_read",
+  );
+  if (error) {
+    throw new Error(`Could not mark all notifications as read: ${error.message}`);
+  }
+}
+
 function getSupabaseClient() {
   if (!supabaseClient) {
     throw new Error("Supabase is not configured for notifications.");
